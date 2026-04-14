@@ -268,6 +268,12 @@ variable "enable_service_bindings" {
   default     = true
 }
 
+variable "enable_control_plane_cron" {
+  description = "Enable scheduled execution for the control-plane worker. Disable during the initial DO bootstrap apply, then enable afterward."
+  type        = bool
+  default     = true
+}
+
 variable "project_root" {
   description = "Root path to the project repository"
   type        = string

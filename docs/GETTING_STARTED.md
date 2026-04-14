@@ -371,6 +371,15 @@ allowed_email_domains = ""                      # Comma-separated domains (e.g.,
 Deployment requires **two phases** due to Cloudflare's Durable Object and service binding
 requirements.
 
+For a fresh control-plane deployment, use these migration values in
+`terraform/environments/production/workers-control-plane.tf`:
+
+```hcl
+migration_tag       = "v1"
+migration_old_tag   = null
+new_sqlite_classes  = []
+```
+
 ### Phase 1: Initial Deployment
 
 Ensure your `terraform.tfvars` has:
@@ -378,6 +387,7 @@ Ensure your `terraform.tfvars` has:
 ```hcl
 enable_durable_object_bindings = false
 enable_service_bindings        = false
+enable_control_plane_cron      = false
 ```
 
 **Important**: Build the workers before running Terraform (Terraform references the built bundles):
@@ -386,6 +396,17 @@ enable_service_bindings        = false
 # From the repository root
 npm run build -w @open-inspect/control-plane -w @open-inspect/slack-bot -w @open-inspect/github-bot
 ```
+
+If you are deploying the Modal infrastructure with Terraform, ensure the Modal CLI is available on
+your `PATH`. If you installed Modal into `packages/modal-infra/.venv`, activate that virtualenv or
+export its `bin` directory first:
+
+```bash
+export PATH="$PWD/packages/modal-infra/.venv/bin:$PATH"
+```
+
+Terraform deploys `modal-infra` via local CLI commands, so `modal` must be resolvable from your
+shell.
 
 Then run:
 
@@ -406,6 +427,7 @@ After Phase 1 succeeds, update your `terraform.tfvars`:
 ```hcl
 enable_durable_object_bindings = true
 enable_service_bindings        = true
+enable_control_plane_cron      = true
 ```
 
 Then run:
@@ -414,7 +436,7 @@ Then run:
 terraform apply
 ```
 
-Terraform will update the workers with the required bindings.
+Terraform will update the workers with the required bindings and enable scheduled execution.
 
 ---
 

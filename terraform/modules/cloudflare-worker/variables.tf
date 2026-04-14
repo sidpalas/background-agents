@@ -110,6 +110,12 @@ variable "cron_triggers" {
   default     = []
 }
 
+variable "enable_cron_triggers" {
+  description = "Enable creation of cron triggers for this worker"
+  type        = bool
+  default     = true
+}
+
 variable "compatibility_date" {
   description = "Compatibility date for the worker"
   type        = string

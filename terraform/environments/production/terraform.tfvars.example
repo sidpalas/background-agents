@@ -79,6 +79,10 @@ github_app_installation_id = ""
 # =============================================================================
 # From Slack App dashboard: https://api.slack.com/apps
 # Set enable_slack_bot = false to skip deployment.
+# When enabling Slack for the first time, the first terraform apply may fail
+# with a Cloudflare service binding error because the Slack worker does not
+# exist yet or does not have a deployment yet. If that happens, run
+# terraform apply again after the Slack worker has been created.
 
 enable_slack_bot = false
 
@@ -148,12 +152,13 @@ project_root = "../../../"
 # =============================================================================
 # Initial Deployment Flags
 # =============================================================================
-# For first-time deployment, set both to false to avoid chicken-and-egg issues
-# with Durable Objects and service bindings.
-# After the first successful deployment, set both to true and run terraform apply again.
+# For first-time deployment, set these to false to avoid chicken-and-egg issues
+# with Durable Objects, service bindings, and scheduled execution.
+# After the first successful deployment, set these to true and run terraform apply again.
 
 enable_durable_object_bindings = false
-enable_service_bindings = false
+enable_service_bindings        = false
+enable_control_plane_cron      = false
 
 # =============================================================================
 # Access Control

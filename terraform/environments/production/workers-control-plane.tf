@@ -85,11 +85,20 @@ module "control_plane_worker" {
 
   compatibility_date  = "2024-09-23"
   compatibility_flags = ["nodejs_compat"]
-  migration_tag       = "v2"
-  migration_old_tag   = "v1"
-  new_sqlite_classes  = ["SchedulerDO"]
+  # These migration values may reflect the current deployed state for this
+  # environment. Fresh installs should start with:
+  # - migration_tag = "v1"
+  # - migration_old_tag = null
+  # - new_sqlite_classes = []
+  migration_tag      = "v2"
+  migration_old_tag  = "v1"
+  new_sqlite_classes = ["SchedulerDO"]
 
-  cron_triggers = ["* * * * *"]
+  # Enable cron only after the initial control-plane bootstrap completes.
+  # Disable this during the first apply, then enable it once DO bindings and
+  # service bindings are in place.
+  enable_cron_triggers = var.enable_control_plane_cron
+  cron_triggers        = ["* * * * *"]
 
   depends_on = [null_resource.control_plane_build, module.session_index_kv, null_resource.d1_migrations, module.linear_bot_worker]
 }
