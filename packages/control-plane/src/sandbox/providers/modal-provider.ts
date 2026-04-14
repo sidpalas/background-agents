@@ -47,6 +47,8 @@ export class ModalSandboxProvider implements SandboxProvider {
     supportsSnapshots: true,
     supportsRestore: true,
     supportsWarm: true,
+    supportsPersistentResume: false,
+    supportsExplicitStop: false,
   };
 
   constructor(private readonly client: ModalClient) {}
@@ -72,6 +74,8 @@ export class ModalSandboxProvider implements SandboxProvider {
           repoImageSha: config.repoImageSha,
           timeoutSeconds: config.timeoutSeconds,
           branch: config.branch,
+          codeServerEnabled: config.codeServerEnabled,
+          sandboxSettings: config.sandboxSettings,
         },
         config.correlation
       );
@@ -81,6 +85,10 @@ export class ModalSandboxProvider implements SandboxProvider {
         providerObjectId: result.modalObjectId,
         status: result.status,
         createdAt: result.createdAt,
+        codeServerUrl: result.codeServerUrl,
+        codeServerPassword: result.codeServerPassword,
+        ttydUrl: result.ttydUrl,
+        tunnelUrls: result.tunnelUrls,
       };
     } catch (error) {
       throw this.classifyError("Failed to create sandbox", error);
@@ -106,6 +114,8 @@ export class ModalSandboxProvider implements SandboxProvider {
           userEnvVars: config.userEnvVars,
           timeoutSeconds: config.timeoutSeconds ?? DEFAULT_SANDBOX_TIMEOUT_SECONDS,
           branch: config.branch,
+          codeServerEnabled: config.codeServerEnabled,
+          sandboxSettings: config.sandboxSettings,
         },
         config.correlation
       );
@@ -115,6 +125,10 @@ export class ModalSandboxProvider implements SandboxProvider {
           success: true,
           sandboxId: result.sandboxId,
           providerObjectId: result.modalObjectId,
+          codeServerUrl: result.codeServerUrl,
+          codeServerPassword: result.codeServerPassword,
+          ttydUrl: result.ttydUrl,
+          tunnelUrls: result.tunnelUrls,
         };
       }
 

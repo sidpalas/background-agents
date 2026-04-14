@@ -4,8 +4,10 @@ import { useState } from "react";
 import useSWR, { mutate } from "swr";
 import { useRepos } from "@/hooks/use-repos";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { RefreshIcon } from "@/components/ui/icons";
 import { formatRelativeTime } from "@/lib/time";
+import { supportsRepoImages } from "@/lib/sandbox-provider";
 
 interface RepoImage {
   repo_owner: string;
@@ -25,11 +27,25 @@ interface ImageRegistryData {
 const REPO_IMAGES_KEY = "/api/repo-images";
 
 export function ImagesSettings() {
+  const repoImagesSupported = supportsRepoImages();
   const { repos, loading: reposLoading } = useRepos();
-  const { data, isLoading: imagesLoading } = useSWR<ImageRegistryData>(REPO_IMAGES_KEY);
+  const { data, isLoading: imagesLoading } = useSWR<ImageRegistryData>(
+    repoImagesSupported ? REPO_IMAGES_KEY : null
+  );
   const [togglingRepos, setTogglingRepos] = useState<Set<string>>(new Set());
   const [triggeringRepos, setTriggeringRepos] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
+
+  if (!repoImagesSupported) {
+    return (
+      <div>
+        <h2 className="text-xl font-semibold text-foreground mb-1">Pre-Built Images</h2>
+        <p className="text-sm text-muted-foreground">
+          Pre-built images are only available when <code>SANDBOX_PROVIDER=modal</code>.
+        </p>
+      </div>
+    );
+  }
 
   const loading = reposLoading || imagesLoading;
 
@@ -137,17 +153,12 @@ export function ImagesSettings() {
               className="flex items-center justify-between px-4 py-3 border border-border hover:bg-muted/50 transition"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <label className="relative flex-shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={isEnabled}
-                    onChange={() => handleToggle(repo.owner, repo.name, !isEnabled)}
-                    disabled={isToggling}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-muted rounded-full peer-checked:bg-accent transition-colors" />
-                  <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
-                </label>
+                <Switch
+                  checked={isEnabled}
+                  onCheckedChange={(checked) => handleToggle(repo.owner, repo.name, checked)}
+                  disabled={isToggling}
+                  aria-label={`Toggle pre-built images for ${repo.owner}/${repo.name}`}
+                />
                 <span className="text-sm font-medium text-foreground truncate">
                   {repo.owner}/{repo.name}
                 </span>

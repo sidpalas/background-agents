@@ -17,6 +17,7 @@ export interface SessionInternalRouteHandlers {
   prompt: SessionInternalRouteHandler;
   stop: SessionInternalRouteHandler;
   sandboxEvent: SessionInternalRouteHandler;
+  createMediaArtifact: SessionInternalRouteHandler;
   listParticipants: SessionInternalRouteHandler;
   addParticipant: SessionInternalRouteHandler;
   listEvents: SessionInternalRouteHandler;
@@ -24,6 +25,7 @@ export interface SessionInternalRouteHandlers {
   listMessages: SessionInternalRouteHandler;
   createPr: SessionInternalRouteHandler;
   wsToken: SessionInternalRouteHandler;
+  updateTitle: SessionInternalRouteHandler;
   archive: SessionInternalRouteHandler;
   unarchive: SessionInternalRouteHandler;
   verifySandboxToken: SessionInternalRouteHandler;
@@ -48,6 +50,11 @@ export function createSessionInternalRoutes(
     { method: "POST", path: SessionInternalPaths.stop, handler: handlers.stop },
     { method: "POST", path: SessionInternalPaths.sandboxEvent, handler: handlers.sandboxEvent },
     {
+      method: "POST",
+      path: SessionInternalPaths.createMediaArtifact,
+      handler: handlers.createMediaArtifact,
+    },
+    {
       method: "GET",
       path: SessionInternalPaths.participants,
       handler: handlers.listParticipants,
@@ -62,6 +69,7 @@ export function createSessionInternalRoutes(
     { method: "GET", path: SessionInternalPaths.messages, handler: handlers.listMessages },
     { method: "POST", path: SessionInternalPaths.createPr, handler: handlers.createPr },
     { method: "POST", path: SessionInternalPaths.wsToken, handler: handlers.wsToken },
+    { method: "POST", path: SessionInternalPaths.updateTitle, handler: handlers.updateTitle },
     { method: "POST", path: SessionInternalPaths.archive, handler: handlers.archive },
     { method: "POST", path: SessionInternalPaths.unarchive, handler: handlers.unarchive },
     {

@@ -36,6 +36,9 @@ export interface SessionRow {
   parent_session_id: string | null;
   spawn_source: SpawnSource;
   spawn_depth: number;
+  code_server_enabled: number; // 0 = disabled (default), 1 = enabled
+  total_cost: number; // Running aggregate of step_finish event costs
+  sandbox_settings: string | null; // JSON blob of SandboxSettings
   created_at: number;
   updated_at: number;
 }
@@ -91,7 +94,7 @@ export interface ArtifactRow {
 export interface SandboxRow {
   id: string;
   modal_sandbox_id: string | null; // Our generated sandbox ID
-  modal_object_id: string | null; // Modal's internal object ID (for snapshot API)
+  modal_object_id: string | null; // Legacy column: provider object ID (Modal object ID or Daytona handle)
   snapshot_id: string | null;
   snapshot_image_id: string | null; // Modal Image ID for filesystem snapshot restoration
   auth_token: string | null;
@@ -102,6 +105,11 @@ export interface SandboxRow {
   last_activity: number | null; // Last activity timestamp for inactivity-based snapshot
   last_spawn_error: string | null;
   last_spawn_error_at: number | null;
+  code_server_url: string | null;
+  code_server_password: string | null;
+  tunnel_urls: string | null; // JSON mapping of port -> tunnel URL
+  ttyd_url: string | null;
+  ttyd_token: string | null;
   created_at: number;
 }
 

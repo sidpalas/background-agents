@@ -2,11 +2,14 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { mutate } from "swr";
+import { SIDEBAR_SESSIONS_KEY } from "@/lib/session-list";
 import type { Artifact, SandboxEvent } from "@/types/session";
 import type {
   ParticipantPresence,
   SandboxEvent as SharedSandboxEvent,
+  ScreenshotArtifactMetadata,
   ServerMessage,
+  SessionArtifact,
   SessionState as SharedSessionState,
 } from "@open-inspect/shared";
 
@@ -108,18 +111,75 @@ function toUiSandboxEvent(event: SharedSandboxEvent): SandboxEvent {
   };
 }
 
-function toUiArtifact(artifact: {
-  id: string;
-  type: string;
-  url: string;
-  prNumber?: number;
-}): Artifact {
+type PrState = NonNullable<NonNullable<Artifact["metadata"]>["prState"]>;
+const PR_STATES = new Set<string>(["open", "merged", "closed", "draft"]);
+const SCREENSHOT_MIME_TYPES = new Set<ScreenshotArtifactMetadata["mimeType"]>([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
+
+function isScreenshotMimeType(value: string): value is ScreenshotArtifactMetadata["mimeType"] {
+  return SCREENSHOT_MIME_TYPES.has(value as ScreenshotArtifactMetadata["mimeType"]);
+}
+
+function toUiArtifact(artifact: SessionArtifact): Artifact {
+  const meta = artifact.metadata as Record<string, unknown> | null;
   return {
     id: artifact.id,
     type: artifact.type as Artifact["type"],
     url: artifact.url,
-    createdAt: Date.now(),
-    metadata: artifact.prNumber ? { prNumber: artifact.prNumber } : undefined,
+    createdAt: artifact.createdAt,
+    metadata: meta
+      ? {
+          prNumber: typeof meta.number === "number" ? meta.number : undefined,
+          prState:
+            typeof meta.state === "string" && PR_STATES.has(meta.state)
+              ? (meta.state as PrState)
+              : undefined,
+          mode: meta.mode === "manual_pr" ? "manual_pr" : undefined,
+          createPrUrl: typeof meta.createPrUrl === "string" ? meta.createPrUrl : undefined,
+          head: typeof meta.head === "string" ? meta.head : undefined,
+          base: typeof meta.base === "string" ? meta.base : undefined,
+          provider: typeof meta.provider === "string" ? meta.provider : undefined,
+          filename: typeof meta.filename === "string" ? meta.filename : undefined,
+          objectKey: typeof meta.objectKey === "string" ? meta.objectKey : undefined,
+          mimeType:
+            typeof meta.mimeType === "string" && isScreenshotMimeType(meta.mimeType)
+              ? meta.mimeType
+              : undefined,
+          sizeBytes:
+            typeof meta.sizeBytes === "number" &&
+            Number.isFinite(meta.sizeBytes) &&
+            meta.sizeBytes >= 0
+              ? meta.sizeBytes
+              : undefined,
+          viewport:
+            meta.viewport &&
+            typeof meta.viewport === "object" &&
+            typeof (meta.viewport as { width?: unknown }).width === "number" &&
+            Number.isFinite((meta.viewport as { width: number }).width) &&
+            (meta.viewport as { width: number }).width > 0 &&
+            typeof (meta.viewport as { height?: unknown }).height === "number" &&
+            Number.isFinite((meta.viewport as { height: number }).height) &&
+            (meta.viewport as { height: number }).height > 0
+              ? {
+                  width: (meta.viewport as { width: number }).width,
+                  height: (meta.viewport as { height: number }).height,
+                }
+              : undefined,
+          sourceUrl: typeof meta.sourceUrl === "string" ? meta.sourceUrl : undefined,
+          fullPage: typeof meta.fullPage === "boolean" ? meta.fullPage : undefined,
+          annotated: typeof meta.annotated === "boolean" ? meta.annotated : undefined,
+          caption: typeof meta.caption === "string" ? meta.caption : undefined,
+          previewStatus:
+            meta.previewStatus === "active" ||
+            meta.previewStatus === "outdated" ||
+            meta.previewStatus === "stopped"
+              ? meta.previewStatus
+              : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -194,6 +254,23 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
       // Other events (tool_call, user_message, git_sync, etc.) - add normally
       setEvents((prev) => [...prev, event]);
     }
+
+    if (
+      event.type === "step_finish" &&
+      typeof event.cost === "number" &&
+      Number.isFinite(event.cost) &&
+      event.cost > 0
+    ) {
+      const stepCost = event.cost;
+      setSessionState((prev) =>
+        prev
+          ? {
+              ...prev,
+              totalCost: (prev.totalCost ?? 0) + stepCost,
+            }
+          : prev
+      );
+    }
   }, []);
 
   const handleMessage = useCallback(
@@ -202,14 +279,16 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
         case "subscribed": {
           console.log("WebSocket subscribed to session");
           subscribedRef.current = true;
-          // Clear existing state since we're about to receive fresh history
-          setArtifacts([]);
+          // Replace local artifacts with the subscribed snapshot so reconnects
+          // still clear stale state instead of merging stale client data.
+          setArtifacts(data.artifacts.map(toUiArtifact));
           pendingTextRef.current = null;
           if (data.state) {
             setSessionState({
               ...data.state,
               // Backward-compatible default for older sessions that may omit this.
               isProcessing: data.state.isProcessing ?? false,
+              totalCost: data.state.totalCost ?? 0,
             });
           }
           // Store the current user's participant ID and info for author attribution
@@ -287,11 +366,56 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
           break;
 
         case "sandbox_spawning":
-          setSessionState((prev) => (prev ? { ...prev, sandboxStatus: "spawning" } : null));
+          setSessionState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  sandboxStatus: "spawning",
+                  codeServerUrl: undefined,
+                  codeServerPassword: undefined,
+                  tunnelUrls: undefined,
+                  ttydUrl: undefined,
+                  ttydToken: undefined,
+                }
+              : null
+          );
           break;
 
-        case "sandbox_status":
-          setSessionState((prev) => (prev ? { ...prev, sandboxStatus: data.status } : null));
+        case "sandbox_status": {
+          const isTerminal =
+            data.status === "stale" || data.status === "stopped" || data.status === "failed";
+          setSessionState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  sandboxStatus: data.status,
+                  ...(isTerminal && {
+                    codeServerUrl: undefined,
+                    codeServerPassword: undefined,
+                    tunnelUrls: undefined,
+                    ttydUrl: undefined,
+                    ttydToken: undefined,
+                  }),
+                }
+              : null
+          );
+          break;
+        }
+
+        case "code_server_info":
+          setSessionState((prev) =>
+            prev ? { ...prev, codeServerUrl: data.url, codeServerPassword: data.password } : null
+          );
+          break;
+
+        case "ttyd_info":
+          setSessionState((prev) =>
+            prev ? { ...prev, ttydUrl: data.url, ttydToken: data.token } : null
+          );
+          break;
+
+        case "tunnel_urls":
+          setSessionState((prev) => (prev ? { ...prev, tunnelUrls: data.urls } : null));
           break;
 
         case "sandbox_ready":
@@ -300,25 +424,39 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
 
         case "artifact_created":
           setArtifacts((prev) => {
-            // Avoid duplicates
-            const existing = prev.find((a) => a.id === data.artifact.id);
-            if (existing) {
-              return prev.map((a) => (a.id === data.artifact.id ? toUiArtifact(data.artifact) : a));
+            const nextArtifact = toUiArtifact(data.artifact);
+            const existingIndex = prev.findIndex((artifact) => artifact.id === nextArtifact.id);
+            if (existingIndex === -1) {
+              return [nextArtifact, ...prev];
             }
-            return [...prev, toUiArtifact(data.artifact)];
+
+            return prev.map((artifact, index) =>
+              index === existingIndex ? nextArtifact : artifact
+            );
           });
+          break;
+
+        case "session_branch":
+          // Branch updates apply only to the active session detail view.
+          setSessionState((prev) => (prev ? { ...prev, branchName: data.branchName } : null));
+          break;
+
+        case "session_title":
+          if (data.title) {
+            setSessionState((prev) => (prev ? { ...prev, title: data.title! } : null));
+          }
           break;
 
         case "session_status":
           setSessionState((prev) => (prev ? { ...prev, status: data.status } : null));
           // Revalidate session list so status change is reflected in sidebar
-          mutate("/api/sessions");
+          mutate(SIDEBAR_SESSIONS_KEY);
           break;
 
         case "child_session_update":
           // Child session spawned or changed status — revalidate child list and sidebar
           mutate(`/api/sessions/${sessionId}/children`);
-          mutate("/api/sessions");
+          mutate(SIDEBAR_SESSIONS_KEY);
           break;
 
         case "processing_status":

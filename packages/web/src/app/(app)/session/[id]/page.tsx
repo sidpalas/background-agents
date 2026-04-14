@@ -16,19 +16,24 @@ import {
 import { useSessionSocket } from "@/hooks/use-session-socket";
 import { SafeMarkdown } from "@/components/safe-markdown";
 import { ToolCallGroup } from "@/components/tool-call-group";
+import { ScreenshotArtifactCard } from "@/components/screenshot-artifact-card";
+import { MediaLightbox } from "@/components/media-lightbox";
 import { useSidebarContext } from "@/components/sidebar-layout";
 import {
   SessionRightSidebar,
   SessionRightSidebarContent,
 } from "@/components/session-right-sidebar";
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
+import { TerminalPanel } from "@/components/terminal-panel";
 import { ActionBar } from "@/components/action-bar";
 import { copyToClipboard, formatModelNameLower } from "@/lib/format";
 import { SHORTCUT_LABELS } from "@/lib/keyboard-shortcuts";
+import { SIDEBAR_SESSIONS_KEY } from "@/lib/session-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { DEFAULT_MODEL, getDefaultReasoningEffort, type ModelCategory } from "@open-inspect/shared";
 import { useEnabledModels } from "@/hooks/use-enabled-models";
 import { ReasoningEffortPills } from "@/components/reasoning-effort-pills";
-import type { SandboxEvent } from "@/types/session";
+import type { Artifact, SandboxEvent } from "@/types/session";
 import {
   SidebarIcon,
   ModelIcon,
@@ -41,6 +46,7 @@ import {
 import { Combobox, type ComboboxGroup } from "@/components/ui/combobox";
 
 type ToolCallEvent = Extract<SandboxEvent, { type: "tool_call" }>;
+import type { SessionItem } from "@/components/session-sidebar";
 
 // Event grouping types
 type EventGroup =
@@ -54,6 +60,8 @@ type FallbackSessionInfo = {
   repoName: string | null;
   title: string | null;
 };
+
+type SessionsResponse = { sessions: SessionItem[] };
 
 // Group consecutive tool calls of the same type
 function groupEvents(events: SandboxEvent[]): EventGroup[] {
@@ -206,11 +214,26 @@ function SessionPageContent() {
     (url: string) =>
       fetch(url, { method: "POST" }).then((r) => {
         if (r.ok) {
-          mutate("/api/sessions");
+          mutate(SIDEBAR_SESSIONS_KEY);
           return true;
         }
 
         console.error("Failed to archive session");
+        return false;
+      }),
+    { throwOnError: false }
+  );
+
+  const { trigger: triggerRename } = useSWRMutation(
+    `/api/sessions/${sessionId}/title`,
+    (url: string, { arg }: { arg: { title: string } }) =>
+      fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: arg.title }),
+      }).then((r) => {
+        if (r.ok) return true;
+        console.error("Failed to update session title");
         return false;
       }),
     { throwOnError: false }
@@ -223,17 +246,56 @@ function SessionPageContent() {
     }
   }, [router, triggerArchive]);
 
+  const renameSession = useCallback(
+    async (title: string) => {
+      const updatedAt = Date.now();
+      const updateSessionsTitle = (data?: SessionsResponse): SessionsResponse => {
+        if (!data?.sessions) return { sessions: [] };
+        return {
+          ...data,
+          sessions: data.sessions.map((session) =>
+            session.id === sessionId ? { ...session, title, updatedAt } : session
+          ),
+        };
+      };
+
+      try {
+        await mutate<SessionsResponse>(
+          "/api/sessions",
+          async (currentData?: SessionsResponse) => {
+            const success = await triggerRename({ title });
+            if (!success) {
+              throw new Error("Failed to update session title");
+            }
+            return updateSessionsTitle(currentData);
+          },
+          {
+            optimisticData: updateSessionsTitle,
+            rollbackOnError: true,
+            populateCache: true,
+            revalidate: true,
+          }
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [sessionId, triggerRename]
+  );
+
   const { trigger: handleUnarchive } = useSWRMutation(
     `/api/sessions/${sessionId}/unarchive`,
     (url: string) =>
       fetch(url, { method: "POST" }).then((r) => {
-        if (r.ok) mutate("/api/sessions");
+        if (r.ok) mutate(SIDEBAR_SESSIONS_KEY);
         else console.error("Failed to unarchive session");
       }),
     { throwOnError: false }
   );
 
   const [prompt, setPrompt] = useState("");
+  const [selectedMediaArtifactId, setSelectedMediaArtifactId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
   const [reasoningEffort, setReasoningEffort] = useState<string | undefined>(
     getDefaultReasoningEffort(DEFAULT_MODEL)
@@ -275,7 +337,7 @@ function SessionPageContent() {
     sendPrompt(prompt, selectedModel, reasoningEffort);
     setPrompt("");
     // Revalidate sidebar so this session bubbles to the top
-    mutate("/api/sessions");
+    mutate(SIDEBAR_SESSIONS_KEY);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -326,10 +388,14 @@ function SessionPageContent() {
       stopExecution={stopExecution}
       handleArchive={handleArchive}
       handleUnarchive={handleUnarchive}
+      renameSession={renameSession}
       loadingHistory={loadingHistory}
       loadOlderEvents={loadOlderEvents}
       modelOptions={enabledModelOptions}
       fallbackSessionInfo={fallbackSessionInfo}
+      sessionId={sessionId}
+      selectedMediaArtifactId={selectedMediaArtifactId}
+      setSelectedMediaArtifactId={setSelectedMediaArtifactId}
     />
   );
 }
@@ -360,10 +426,14 @@ function SessionContent({
   stopExecution,
   handleArchive,
   handleUnarchive,
+  renameSession,
   loadingHistory,
   loadOlderEvents,
   modelOptions,
   fallbackSessionInfo,
+  sessionId,
+  selectedMediaArtifactId,
+  setSelectedMediaArtifactId,
 }: {
   sessionState: SessionState;
   connected: boolean;
@@ -390,19 +460,54 @@ function SessionContent({
   stopExecution: () => void;
   handleArchive: () => void | Promise<void>;
   handleUnarchive: () => void | Promise<void>;
+  renameSession: (title: string) => Promise<boolean | undefined>;
   loadingHistory: boolean;
   loadOlderEvents: () => void;
   modelOptions: ModelCategory[];
   fallbackSessionInfo: FallbackSessionInfo;
+  sessionId: string;
+  selectedMediaArtifactId: string | null;
+  setSelectedMediaArtifactId: (artifactId: string | null) => void;
 }) {
   const { isOpen, toggle } = useSidebarContext();
   const isBelowLg = useMediaQuery("(max-width: 1023px)");
   const isPhone = useMediaQuery("(max-width: 767px)");
+  const resolvedRepoOwner = sessionState?.repoOwner ?? fallbackSessionInfo.repoOwner;
+  const resolvedRepoName = sessionState?.repoName ?? fallbackSessionInfo.repoName;
+  const fallbackRepoLabel =
+    resolvedRepoOwner && resolvedRepoName
+      ? `${resolvedRepoOwner}/${resolvedRepoName}`
+      : "Loading session...";
+  const baseResolvedTitle = sessionState?.title ?? fallbackSessionInfo.title ?? fallbackRepoLabel;
+
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [title, setTitle] = useState(baseResolvedTitle);
+  const [optimisticTitle, setOptimisticTitle] = useState<string | null>(null);
   const [sheetDragY, setSheetDragY] = useState(0);
   const sheetDragYRef = useRef(0);
   const detailsButtonRef = useRef<HTMLButtonElement>(null);
   const sheetTouchStartYRef = useRef<number | null>(null);
+
+  // Terminal panel state
+  const [terminalOpen, setTerminalOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("terminal-visible") === "true";
+  });
+  const toggleTerminal = useCallback(() => {
+    setTerminalOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem("terminal-visible", String(next));
+      return next;
+    });
+  }, []);
+  const closeTerminal = useCallback(() => {
+    setTerminalOpen(false);
+    localStorage.setItem("terminal-visible", "false");
+  }, []);
+  const ttydUrl = sessionState?.ttydUrl;
+  const ttydToken = sessionState?.ttydToken;
+  const showTerminal = !!(ttydUrl && ttydToken && terminalOpen && !isBelowLg);
 
   // Scroll pagination refs
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -432,6 +537,46 @@ function SessionContent({
       return next;
     });
   }, [resetSheetDragState]);
+
+  const handleStartRename = () => {
+    setTitle(resolvedTitle);
+    setIsRenaming(true);
+  };
+
+  const handleRenameSubmit = async () => {
+    if (!sessionState) {
+      setIsRenaming(false);
+      return;
+    }
+
+    const trimmed = title.trim();
+
+    if (!trimmed || trimmed === resolvedTitle) {
+      setIsRenaming(false);
+      return;
+    }
+
+    const previousTitle = resolvedTitle;
+    setIsRenaming(false);
+    setOptimisticTitle(trimmed);
+
+    const success = await renameSession(trimmed);
+    if (!success) {
+      setOptimisticTitle(null);
+      setTitle(previousTitle);
+      setIsRenaming(true);
+    }
+  };
+
+  const resolvedTitle =
+    optimisticTitle ?? sessionState?.title ?? fallbackSessionInfo.title ?? fallbackRepoLabel;
+
+  useEffect(() => {
+    if (!optimisticTitle) return;
+    if (sessionState?.title === optimisticTitle) {
+      setOptimisticTitle(null);
+    }
+  }, [optimisticTitle, sessionState?.title]);
 
   const handleSheetTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     const startY = event.touches[0]?.clientY;
@@ -466,6 +611,10 @@ function SessionContent({
     setSheetDragY(0);
     sheetTouchStartYRef.current = null;
   }, [closeDetails]);
+
+  useEffect(() => {
+    if (!isRenaming) setTitle(sessionState?.title ?? "");
+  }, [sessionState?.title, isRenaming]);
 
   useEffect(() => {
     if (isBelowLg) return;
@@ -548,6 +697,14 @@ function SessionContent({
 
   // Deduplicate and group events for rendering
   const groupedEvents = useMemo(() => dedupeAndGroupEvents(events), [events]);
+  const screenshotArtifacts = useMemo(
+    () => artifacts.filter((artifact) => artifact.type === "screenshot"),
+    [artifacts]
+  );
+  const selectedMediaArtifact = useMemo(
+    () => screenshotArtifacts.find((artifact) => artifact.id === selectedMediaArtifactId) ?? null,
+    [screenshotArtifacts, selectedMediaArtifactId]
+  );
 
   const sessionDisplayInfo = useMemo(
     () => resolveSessionDisplayInfo(sessionState, fallbackSessionInfo),
@@ -572,7 +729,33 @@ function SessionContent({
               </button>
             )}
             <div>
-              <h1 className="font-medium text-foreground">{sessionDisplayInfo.title}</h1>
+              {isRenaming ? (
+                <input
+                  autoFocus
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={handleRenameSubmit}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.currentTarget.blur();
+                    }
+                    if (e.key === "Escape") {
+                      setIsRenaming(false);
+                    }
+                  }}
+                  className="text-sm bg-transparent text-foreground outline-none focus:ring-inset focus:ring-ring font-medium max-w-40 truncate"
+                />
+              ) : (
+                <h1
+                  className="font-medium text-foreground max-w-40 truncate cursor-text"
+                  onClick={handleStartRename}
+                  title="Click to rename"
+                >
+                  {resolvedTitle}
+                </h1>
+              )}
               <p className="text-sm text-muted-foreground">{sessionDisplayInfo.repoLabel}</p>
             </div>
           </div>
@@ -621,45 +804,67 @@ function SessionContent({
 
       {/* Main content */}
       <main className="flex-1 flex overflow-hidden">
-        {/* Event timeline */}
-        <div
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-          className="flex-1 overflow-y-auto overflow-x-hidden p-4"
-        >
-          <div className="max-w-3xl mx-auto space-y-2">
-            {/* Scroll sentinel for loading older history */}
-            <div ref={topSentinelRef} className="h-1" />
-            {loadingHistory && (
-              <div className="text-center text-muted-foreground text-sm py-2">Loading...</div>
-            )}
-            {showTimelineSkeleton ? (
-              <TimelineSkeleton />
-            ) : (
-              groupedEvents.map((group) =>
-                group.type === "tool_group" ? (
-                  <ToolCallGroup key={group.id} events={group.events} groupId={group.id} />
-                ) : (
-                  <EventItem
-                    key={group.id}
-                    event={group.event}
-                    currentParticipantId={currentParticipantId}
-                  />
-                )
-              )
-            )}
-            {isProcessing && <ThinkingIndicator />}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <PanelGroup orientation="vertical" id="session-terminal">
+            {/* Chat / Event Timeline */}
+            <Panel defaultSize={showTerminal ? "70%" : "100%"} minSize="30%">
+              <div
+                ref={scrollContainerRef}
+                onScroll={handleScroll}
+                className="h-full overflow-y-auto overflow-x-hidden p-4"
+              >
+                <div className="max-w-3xl mx-auto space-y-2">
+                  {/* Scroll sentinel for loading older history */}
+                  <div ref={topSentinelRef} className="h-1" />
+                  {loadingHistory && (
+                    <div className="text-center text-muted-foreground text-sm py-2">Loading...</div>
+                  )}
+                  {showTimelineSkeleton ? (
+                    <TimelineSkeleton />
+                  ) : (
+                    groupedEvents.map((group) =>
+                      group.type === "tool_group" ? (
+                        <ToolCallGroup key={group.id} events={group.events} groupId={group.id} />
+                      ) : (
+                        <EventItem
+                          key={group.id}
+                          event={group.event}
+                          sessionId={sessionId}
+                          currentParticipantId={currentParticipantId}
+                          onOpenMedia={setSelectedMediaArtifactId}
+                        />
+                      )
+                    )
+                  )}
+                  {isProcessing && <ThinkingIndicator />}
 
-            <div ref={messagesEndRef} />
-          </div>
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+            </Panel>
+
+            {/* Terminal panel — only rendered when URL + token available and open */}
+            {showTerminal && (
+              <>
+                <PanelResizeHandle className="h-1.5 bg-border-muted hover:bg-accent transition-colors cursor-row-resize" />
+                <Panel defaultSize="30%" minSize="15%" maxSize="70%">
+                  <TerminalPanel url={ttydUrl!} token={ttydToken!} onClose={closeTerminal} />
+                </Panel>
+              </>
+            )}
+          </PanelGroup>
         </div>
 
         {/* Right sidebar */}
         <SessionRightSidebar
+          sessionId={sessionId}
           sessionState={sessionState}
           participants={participants}
           events={events}
           artifacts={artifacts}
+          terminalOpen={terminalOpen}
+          onToggleTerminal={toggleTerminal}
+          onOpenMedia={setSelectedMediaArtifactId}
         />
       </main>
 
@@ -707,10 +912,14 @@ function SessionContent({
               </div>
               <div className="overflow-y-auto">
                 <SessionRightSidebarContent
+                  sessionId={sessionId}
                   sessionState={sessionState}
                   participants={participants}
                   events={events}
                   artifacts={artifacts}
+                  terminalOpen={terminalOpen}
+                  onToggleTerminal={toggleTerminal}
+                  onOpenMedia={setSelectedMediaArtifactId}
                 />
               </div>
             </div>
@@ -735,16 +944,31 @@ function SessionContent({
               </div>
               <div className="flex-1 overflow-y-auto">
                 <SessionRightSidebarContent
+                  sessionId={sessionId}
                   sessionState={sessionState}
                   participants={participants}
                   events={events}
                   artifacts={artifacts}
+                  terminalOpen={terminalOpen}
+                  onToggleTerminal={toggleTerminal}
+                  onOpenMedia={setSelectedMediaArtifactId}
                 />
               </div>
             </div>
           )}
         </div>
       )}
+
+      <MediaLightbox
+        sessionId={sessionId}
+        artifact={selectedMediaArtifact}
+        open={selectedMediaArtifactId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedMediaArtifactId(null);
+          }
+        }}
+      />
 
       {/* Input */}
       <footer className="border-t border-border-muted flex-shrink-0">
@@ -997,10 +1221,14 @@ function ParticipantsList({
 
 const EventItem = memo(function EventItem({
   event,
+  sessionId,
   currentParticipantId,
+  onOpenMedia,
 }: {
   event: SandboxEvent;
+  sessionId: string;
   currentParticipantId: string | null;
+  onOpenMedia: (artifactId: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1125,6 +1353,26 @@ const EventItem = memo(function EventItem({
           <span className="w-2 h-2 rounded-full bg-accent" />
           Git sync: {event.status}
           <span className="text-xs">{time}</span>
+        </div>
+      );
+
+    case "artifact":
+      if (event.artifactType !== "screenshot" || !event.artifactId) {
+        return null;
+      }
+
+      return (
+        <div className="space-y-2 border border-border-muted bg-card p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">Screenshot</span>
+            <span className="text-xs text-secondary-foreground">{time}</span>
+          </div>
+          <ScreenshotArtifactCard
+            sessionId={sessionId}
+            artifactId={event.artifactId}
+            metadata={event.metadata as Artifact["metadata"] | undefined}
+            onOpen={onOpenMedia}
+          />
         </div>
       );
 

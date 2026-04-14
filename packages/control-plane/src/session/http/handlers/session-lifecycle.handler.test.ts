@@ -22,6 +22,9 @@ function createSession(overrides: Partial<SessionRow> = {}): SessionRow {
     parent_session_id: null,
     spawn_source: "user",
     spawn_depth: 0,
+    code_server_enabled: 0,
+    total_cost: 0,
+    sandbox_settings: null,
     created_at: 1000,
     updated_at: 2000,
     ...overrides,
@@ -43,6 +46,11 @@ function createSandbox(overrides: Partial<SandboxRow> = {}): SandboxRow {
     last_activity: null,
     last_spawn_error: null,
     last_spawn_error_at: null,
+    code_server_url: null,
+    code_server_password: null,
+    tunnel_urls: null,
+    ttyd_url: null,
+    ttyd_token: null,
     created_at: 1,
     ...overrides,
   };
@@ -72,6 +80,7 @@ function createHandler() {
     upsertSession: vi.fn(),
     createSandbox: vi.fn(),
     createParticipant: vi.fn(),
+    updateSessionTitle: vi.fn(),
   };
   const getDurableObjectId = vi.fn(() => "session-do-id");
   const encryptToken = vi.fn();
@@ -95,6 +104,7 @@ function createHandler() {
   const getSandboxSocket = vi.fn<() => WebSocket | null>();
   const sendToSandbox = vi.fn();
   const updateSandboxStatus = vi.fn();
+  const broadcast = vi.fn();
 
   const handler = createSessionLifecycleHandler({
     repository,
@@ -115,6 +125,7 @@ function createHandler() {
     getSandboxSocket,
     sendToSandbox,
     updateSandboxStatus,
+    broadcast,
   });
 
   return {
@@ -136,6 +147,7 @@ function createHandler() {
     getSandboxSocket,
     sendToSandbox,
     updateSandboxStatus,
+    broadcast,
   };
 }
 
@@ -175,6 +187,9 @@ describe("createSessionLifecycleHandler", () => {
           scmName: "The Octocat",
           scmEmail: "octocat@example.com",
           scmToken: "plain-scm-token",
+          scmRefreshTokenEncrypted: "encrypted-refresh-token",
+          scmTokenExpiresAt: 9999999,
+          scmUserId: "github-user-123",
           parentSessionId: "parent-1",
           spawnSource: "agent",
           spawnDepth: 1,
@@ -198,6 +213,8 @@ describe("createSessionLifecycleHandler", () => {
       parentSessionId: "parent-1",
       spawnSource: "agent",
       spawnDepth: 1,
+      codeServerEnabled: false,
+      sandboxSettings: null,
       createdAt: 1234,
       updatedAt: 1234,
     });
@@ -210,10 +227,13 @@ describe("createSessionLifecycleHandler", () => {
     expect(repository.createParticipant).toHaveBeenCalledWith({
       id: "participant-1",
       userId: "user-1",
+      scmUserId: "github-user-123",
       scmLogin: "octocat",
       scmName: "The Octocat",
       scmEmail: "octocat@example.com",
       scmAccessTokenEncrypted: "encrypted-scm-token",
+      scmRefreshTokenEncrypted: "encrypted-refresh-token",
+      scmTokenExpiresAt: 9999999,
       role: "owner",
       joinedAt: 1234,
     });
@@ -328,6 +348,103 @@ describe("createSessionLifecycleHandler", () => {
         lastHeartbeat: 999,
       },
     });
+  });
+
+  it("returns 404 when updating title for missing session", async () => {
+    const { handler, getSession } = createHandler();
+    getSession.mockReturnValue(null);
+
+    const response = await handler.updateTitle(
+      new Request("http://internal/internal/update-title", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "user-1", title: "New Title" }),
+      })
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 400 for invalid updateTitle body", async () => {
+    const { handler, getSession } = createHandler();
+    getSession.mockReturnValue(createSession());
+
+    const response = await handler.updateTitle(
+      new Request("http://internal/internal/update-title", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{invalid",
+      })
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 400 for empty title", async () => {
+    const { handler, getSession } = createHandler();
+    getSession.mockReturnValue(createSession());
+
+    const response = await handler.updateTitle(
+      new Request("http://internal/internal/update-title", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "user-1", title: "" }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "title must be a non-empty string" });
+  });
+
+  it("returns 400 for title over 200 characters", async () => {
+    const { handler, getSession } = createHandler();
+    getSession.mockReturnValue(createSession());
+
+    const response = await handler.updateTitle(
+      new Request("http://internal/internal/update-title", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "user-1", title: "a".repeat(201) }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "title must be 200 characters or fewer" });
+  });
+
+  it("returns 403 when non-participant tries to update title", async () => {
+    const { handler, getSession, getParticipantByUserId } = createHandler();
+    getSession.mockReturnValue(createSession());
+    getParticipantByUserId.mockReturnValue(null);
+
+    const response = await handler.updateTitle(
+      new Request("http://internal/internal/update-title", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "user-1", title: "New Title" }),
+      })
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it("updates title, broadcasts, and returns new title", async () => {
+    const { handler, getSession, getParticipantByUserId, repository, broadcast } = createHandler();
+    getSession.mockReturnValue(createSession());
+    getParticipantByUserId.mockReturnValue(createParticipant());
+
+    const response = await handler.updateTitle(
+      new Request("http://internal/internal/update-title", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "user-1", title: "New Title" }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ title: "New Title" });
+    expect(repository.updateSessionTitle).toHaveBeenCalledWith("session-1", "New Title", 1234);
+    expect(broadcast).toHaveBeenCalledWith({ type: "session_title", title: "New Title" });
   });
 
   it("returns 400 for invalid archive body", async () => {

@@ -9,6 +9,7 @@ export const SessionInternalPaths = {
   prompt: "/internal/prompt",
   stop: "/internal/stop",
   sandboxEvent: "/internal/sandbox-event",
+  createMediaArtifact: "/internal/create-media-artifact",
   participants: "/internal/participants",
   events: "/internal/events",
   artifacts: "/internal/artifacts",
@@ -21,6 +22,7 @@ export const SessionInternalPaths = {
   openaiTokenRefresh: "/internal/openai-token-refresh",
   spawnContext: "/internal/spawn-context",
   childSummary: "/internal/child-summary",
+  updateTitle: "/internal/update-title",
   cancel: "/internal/cancel",
   childSessionUpdate: "/internal/child-session-update",
 } as const;

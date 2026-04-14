@@ -37,7 +37,7 @@ Base image definition with:
 - Node.js 22, pnpm, Bun
 - Python 3.12 with uv
 - OpenCode CLI
-- Playwright + headless Chrome
+- agent-browser CLI + headless Chrome
 
 ### Sandbox (`src/sandbox/`)
 
@@ -93,6 +93,16 @@ modal secret create internal-api \
 ```
 
 See `.env.example` for a full list of environment variables.
+
+### Install local packages
+
+`sandbox-runtime` is a sibling package in this monorepo (not published to PyPI).
+If you use `uv`, it is resolved automatically. Otherwise install it first:
+
+```bash
+pip install -e ../sandbox-runtime
+pip install -e ".[dev]"
+```
 
 ### Deploy
 
@@ -176,7 +186,11 @@ Set via Modal secrets:
 ## Development
 
 ```bash
-# Install dev dependencies
+# Using uv (recommended — resolves sandbox-runtime automatically)
+uv sync --frozen --extra dev
+
+# Using pip (install sandbox-runtime first)
+pip install -e ../sandbox-runtime
 pip install -e ".[dev]"
 
 # Run tests

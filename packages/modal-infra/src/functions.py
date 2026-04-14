@@ -58,9 +58,9 @@ async def create_sandbox(
         dict with sandbox_id and status
     """
     # Lazy imports to avoid pydantic at module load time
-    from .auth.github_app import generate_installation_token
+    from .auth import generate_installation_token
+    from .sandbox import SessionConfig
     from .sandbox.manager import SandboxConfig
-    from .sandbox.types import SessionConfig
 
     manager = get_manager()
 
@@ -108,6 +108,8 @@ async def create_sandbox(
         "sandbox_id": handle.sandbox_id,
         "status": handle.status.value,
         "created_at": handle.created_at,
+        "code_server_url": handle.code_server_url,
+        "code_server_password": handle.code_server_password,
     }
 
 

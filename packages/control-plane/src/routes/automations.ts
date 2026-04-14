@@ -7,12 +7,18 @@ import {
   nextCronOccurrence,
   cronIntervalMinutes,
   isValidModel,
+  isValidReasoningEffort,
   getValidModelOrDefault,
+  validateConditions,
+  conditionRegistry,
+  TRIGGER_TYPE_TO_SOURCE,
   type CreateAutomationRequest,
   type UpdateAutomationRequest,
+  type AutomationTriggerType,
 } from "@open-inspect/shared";
 import { AutomationStore, toAutomation, toAutomationRun } from "../db/automation-store";
 import { generateId } from "../auth/crypto";
+import { generateWebhookApiKey, hashApiKey, encryptSentrySecret } from "../auth/webhook-key";
 import { createLogger } from "../logger";
 import {
   type Route,
@@ -20,8 +26,8 @@ import {
   parsePattern,
   json,
   error,
-  createRouteSourceControlProvider,
-  resolveInstalledRepo,
+  parseJsonBody,
+  resolveRepoOrError,
 } from "./shared";
 import type { Env } from "../types";
 
@@ -38,6 +44,14 @@ const MAX_INSTRUCTIONS_LENGTH = 10_000;
 
 /** Warn if next run is more than 31 days away. */
 const FAR_FUTURE_THRESHOLD_MS = 31 * 24 * 60 * 60 * 1000;
+
+function resolveReasoningEffort(
+  model: string,
+  reasoningEffort: string | null | undefined
+): string | null {
+  if (reasoningEffort === undefined || reasoningEffort === null) return null;
+  return isValidReasoningEffort(model, reasoningEffort) ? reasoningEffort : null;
+}
 
 /**
  * Validate an IANA timezone string.
@@ -78,12 +92,8 @@ async function handleCreateAutomation(
   _match: RegExpMatchArray,
   ctx: RequestContext
 ): Promise<Response> {
-  let body: CreateAutomationRequest & { userId?: string };
-  try {
-    body = (await request.json()) as CreateAutomationRequest & { userId?: string };
-  } catch {
-    return error("Invalid JSON body", 400);
-  }
+  const body = await parseJsonBody<CreateAutomationRequest & { userId?: string }>(request);
+  if (body instanceof Response) return body;
 
   // Validate required fields
   if (!body.name || typeof body.name !== "string" || body.name.trim().length === 0) {
@@ -107,58 +117,103 @@ async function handleCreateAutomation(
   }
 
   // Validate trigger type
-  if (body.triggerType && body.triggerType !== "schedule") {
-    return error("triggerType must be 'schedule'", 400);
+  const triggerType: AutomationTriggerType = body.triggerType || "schedule";
+  const validTriggerTypes: AutomationTriggerType[] = [
+    "schedule",
+    "sentry",
+    "webhook",
+    "github_event",
+    "linear_event",
+  ];
+  if (!validTriggerTypes.includes(triggerType)) {
+    return error(`triggerType must be one of: ${validTriggerTypes.join(", ")}`, 400);
   }
 
-  // Validate cron
-  if (!body.scheduleCron || !isValidCron(body.scheduleCron)) {
-    return error("scheduleCron must be a valid 5-field cron expression", 400);
-  }
-  const interval = cronIntervalMinutes(body.scheduleCron);
-  if (interval !== null && interval < MIN_CRON_INTERVAL_MINUTES) {
-    return error(`Schedule interval must be at least ${MIN_CRON_INTERVAL_MINUTES} minutes`, 400);
+  const isSchedule = triggerType === "schedule";
+
+  // Schedule-specific validation
+  if (isSchedule) {
+    if (!body.scheduleCron || !isValidCron(body.scheduleCron)) {
+      return error("scheduleCron must be a valid 5-field cron expression", 400);
+    }
+    const interval = cronIntervalMinutes(body.scheduleCron);
+    if (interval !== null && interval < MIN_CRON_INTERVAL_MINUTES) {
+      return error(`Schedule interval must be at least ${MIN_CRON_INTERVAL_MINUTES} minutes`, 400);
+    }
+    if (!body.scheduleTz || !isValidTimezone(body.scheduleTz)) {
+      return error("scheduleTz must be a valid IANA timezone", 400);
+    }
+  } else {
+    // Reject schedule fields for non-schedule types
+    if (body.scheduleCron || body.scheduleTz) {
+      return error("scheduleCron and scheduleTz are only valid for schedule triggers", 400);
+    }
   }
 
-  // Validate timezone
-  if (!body.scheduleTz || !isValidTimezone(body.scheduleTz)) {
-    return error("scheduleTz must be a valid IANA timezone", 400);
+  // Event-type validation for sentry triggers
+  if (triggerType === "sentry" && !body.eventType) {
+    return error("eventType is required for sentry triggers", 400);
+  }
+
+  // Validate conditions
+  if (body.triggerConfig?.conditions) {
+    if (!Array.isArray(body.triggerConfig.conditions)) {
+      return error("triggerConfig.conditions must be an array", 400);
+    }
+    const source = TRIGGER_TYPE_TO_SOURCE[triggerType];
+    if (source) {
+      const conditionErrors = validateConditions(
+        body.triggerConfig.conditions,
+        source,
+        conditionRegistry
+      );
+      if (conditionErrors.length > 0) {
+        return error(conditionErrors.join("; "), 400);
+      }
+    }
   }
 
   // Validate model
   const model = getValidModelOrDefault(body.model);
+  const reasoningEffort = resolveReasoningEffort(model, body.reasoningEffort);
+  if (body.reasoningEffort !== undefined && body.reasoningEffort !== null && !reasoningEffort) {
+    return error("Invalid reasoning effort for selected model", 400);
+  }
 
   // Resolve repository
   const repoOwner = body.repoOwner.toLowerCase();
   const repoName = body.repoName.toLowerCase();
 
-  let repoId: number;
-  let defaultBranch: string;
-  try {
-    const provider = createRouteSourceControlProvider(env);
-    const resolved = await resolveInstalledRepo(provider, repoOwner, repoName);
-    if (!resolved) {
-      return error("Repository is not installed for the GitHub App", 404);
-    }
-    repoId = resolved.repoId;
-    defaultBranch = resolved.defaultBranch;
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    logger.error("Failed to resolve repository", {
-      error: message,
-      repo_owner: repoOwner,
-      repo_name: repoName,
-    });
-    return error("Failed to resolve repository", 500);
-  }
+  const resolved = await resolveRepoOrError(env, repoOwner, repoName, ctx, logger);
+  if (resolved instanceof Response) return resolved;
 
+  const { repoId, defaultBranch } = resolved;
   const baseBranch = body.baseBranch || defaultBranch;
 
-  // Compute next run
-  const nextRunAt = nextCronOccurrence(body.scheduleCron, body.scheduleTz).getTime();
+  // Compute next run (only for schedule triggers)
+  const nextRunAt = isSchedule
+    ? nextCronOccurrence(body.scheduleCron!, body.scheduleTz!).getTime()
+    : null;
 
   const id = generateId();
   const now = Date.now();
+
+  // Generate auth data for trigger types that need it
+  let webhookApiKey: string | undefined;
+  let triggerAuthData: string | null = null;
+  if (triggerType === "webhook") {
+    webhookApiKey = generateWebhookApiKey();
+    triggerAuthData = await hashApiKey(webhookApiKey);
+  } else if (triggerType === "sentry") {
+    const sentrySecret = body.sentryClientSecret;
+    if (!sentrySecret || typeof sentrySecret !== "string" || sentrySecret.trim().length === 0) {
+      return error("sentryClientSecret is required for sentry triggers", 400);
+    }
+    if (!env.REPO_SECRETS_ENCRYPTION_KEY) {
+      return error("Encryption key not configured", 503);
+    }
+    triggerAuthData = await encryptSentrySecret(sentrySecret, env.REPO_SECRETS_ENCRYPTION_KEY);
+  }
 
   const store = new AutomationStore(env.DB);
   await store.create({
@@ -169,10 +224,11 @@ async function handleCreateAutomation(
     base_branch: baseBranch,
     repo_id: repoId,
     instructions: body.instructions,
-    trigger_type: body.triggerType || "schedule",
-    schedule_cron: body.scheduleCron,
-    schedule_tz: body.scheduleTz,
+    trigger_type: triggerType,
+    schedule_cron: body.scheduleCron ?? null,
+    schedule_tz: body.scheduleTz ?? "UTC",
     model,
+    reasoning_effort: reasoningEffort,
     enabled: 1,
     next_run_at: nextRunAt,
     consecutive_failures: 0,
@@ -180,6 +236,9 @@ async function handleCreateAutomation(
     created_at: now,
     updated_at: now,
     deleted_at: null,
+    event_type: body.eventType ?? null,
+    trigger_config: body.triggerConfig ? JSON.stringify(body.triggerConfig) : null,
+    trigger_auth_data: triggerAuthData,
   });
 
   const automation = toAutomation((await store.getById(id))!);
@@ -188,13 +247,30 @@ async function handleCreateAutomation(
     event: "automation.created",
     automation_id: id,
     repo: `${repoOwner}/${repoName}`,
+    trigger_type: triggerType,
     request_id: ctx.request_id,
     trace_id: ctx.trace_id,
   });
 
-  const result: { automation: typeof automation; warning?: string } = { automation };
+  const workerUrl = env.WORKER_URL || "";
+  const result: {
+    automation: typeof automation;
+    warning?: string;
+    webhookApiKey?: string;
+    webhookUrl?: string;
+    sentryWebhookUrl?: string;
+  } = { automation };
 
-  if (nextRunAt - now > FAR_FUTURE_THRESHOLD_MS) {
+  if (webhookApiKey) {
+    result.webhookApiKey = webhookApiKey;
+    result.webhookUrl = `${workerUrl}/webhooks/automation/${id}`;
+  }
+
+  if (triggerType === "sentry") {
+    result.sentryWebhookUrl = `${workerUrl}/webhooks/sentry/${id}`;
+  }
+
+  if (nextRunAt && nextRunAt - now > FAR_FUTURE_THRESHOLD_MS) {
     result.warning = "Next scheduled run is more than 31 days away";
   }
 
@@ -230,12 +306,8 @@ async function handleUpdateAutomation(
   const existing = await store.getById(id);
   if (!existing) return error("Automation not found", 404);
 
-  let body: UpdateAutomationRequest;
-  try {
-    body = (await request.json()) as UpdateAutomationRequest;
-  } catch {
-    return error("Invalid JSON body", 400);
-  }
+  const body = await parseJsonBody<UpdateAutomationRequest>(request);
+  if (body instanceof Response) return body;
 
   // Validate fields if provided
   if (body.name !== undefined) {
@@ -274,17 +346,76 @@ async function handleUpdateAutomation(
     return error("Invalid model", 400);
   }
 
+  const nextModel = body.model !== undefined ? getValidModelOrDefault(body.model) : existing.model;
+  const requestedReasoningEffort = body.reasoningEffort;
+  const resolvedReasoningEffort =
+    requestedReasoningEffort !== undefined
+      ? resolveReasoningEffort(nextModel, requestedReasoningEffort)
+      : body.model !== undefined && existing.reasoning_effort !== null
+        ? resolveReasoningEffort(nextModel, existing.reasoning_effort)
+        : existing.reasoning_effort;
+
+  if (
+    requestedReasoningEffort !== undefined &&
+    requestedReasoningEffort !== null &&
+    resolvedReasoningEffort === null
+  ) {
+    return error("Invalid reasoning effort for selected model", 400);
+  }
+
   // Build update fields
   const updateFields: Record<string, unknown> = {};
   if (body.name !== undefined) updateFields.name = body.name.trim();
   if (body.instructions !== undefined) updateFields.instructions = body.instructions;
   if (body.scheduleCron !== undefined) updateFields.schedule_cron = body.scheduleCron;
   if (body.scheduleTz !== undefined) updateFields.schedule_tz = body.scheduleTz;
-  if (body.model !== undefined) updateFields.model = getValidModelOrDefault(body.model);
+  if (body.model !== undefined) updateFields.model = nextModel;
+  if (body.reasoningEffort !== undefined || body.model !== undefined) {
+    updateFields.reasoning_effort = resolvedReasoningEffort;
+  }
   if (body.baseBranch !== undefined) updateFields.base_branch = body.baseBranch;
 
-  // Recompute next_run_at if schedule changed
-  if (body.scheduleCron !== undefined || body.scheduleTz !== undefined) {
+  // Update event type — only for non-schedule types
+  if (body.eventType !== undefined) {
+    if (existing.trigger_type === "schedule") {
+      return error("Cannot set eventType on schedule automations", 400);
+    }
+    updateFields.event_type = body.eventType;
+  }
+
+  // Update trigger config (conditions) — only for non-schedule types
+  if (body.triggerConfig !== undefined) {
+    if (existing.trigger_type === "schedule") {
+      return error("Cannot set triggerConfig on schedule automations", 400);
+    }
+    if (body.triggerConfig === null) {
+      updateFields.trigger_config = null;
+    } else {
+      if (body.triggerConfig.conditions) {
+        if (!Array.isArray(body.triggerConfig.conditions)) {
+          return error("triggerConfig.conditions must be an array", 400);
+        }
+        const source = TRIGGER_TYPE_TO_SOURCE[existing.trigger_type as AutomationTriggerType];
+        if (source) {
+          const conditionErrors = validateConditions(
+            body.triggerConfig.conditions,
+            source,
+            conditionRegistry
+          );
+          if (conditionErrors.length > 0) {
+            return error(conditionErrors.join("; "), 400);
+          }
+        }
+      }
+      updateFields.trigger_config = JSON.stringify(body.triggerConfig);
+    }
+  }
+
+  // Recompute next_run_at if schedule changed (only for schedule types)
+  if (
+    existing.trigger_type === "schedule" &&
+    (body.scheduleCron !== undefined || body.scheduleTz !== undefined)
+  ) {
     const cron = body.scheduleCron ?? existing.schedule_cron;
     const tz = body.scheduleTz ?? existing.schedule_tz;
     if (!cron) {
@@ -366,11 +497,17 @@ async function handleResumeAutomation(
   const existing = await store.getById(id);
   if (!existing) return error("Automation not found", 404);
 
-  if (!existing.schedule_cron) {
-    return error("Cannot resume: automation has no cron schedule", 400);
+  // For schedule automations, compute the next run time.
+  // For event-driven automations, resume with null next_run_at.
+  let nextRunAt: number | null;
+  if (existing.trigger_type === "schedule") {
+    if (!existing.schedule_cron) {
+      return error("Cannot resume: automation has no cron schedule", 400);
+    }
+    nextRunAt = nextCronOccurrence(existing.schedule_cron, existing.schedule_tz).getTime();
+  } else {
+    nextRunAt = null;
   }
-
-  const nextRunAt = nextCronOccurrence(existing.schedule_cron, existing.schedule_tz).getTime();
 
   const resumed = await store.resume(id, nextRunAt);
   if (!resumed) return error("Automation not found", 404);
@@ -487,6 +624,72 @@ async function handleGetRun(
   return json({ run: toAutomationRun(run) });
 }
 
+async function handleRegenerateKey(
+  request: Request,
+  env: Env,
+  match: RegExpMatchArray,
+  ctx: RequestContext
+): Promise<Response> {
+  const id = match.groups?.id;
+  if (!id) return error("Automation ID required", 400);
+
+  const store = new AutomationStore(env.DB);
+  const automation = await store.getById(id);
+  if (!automation) return error("Automation not found", 404);
+
+  const workerUrl = env.WORKER_URL || "";
+
+  if (automation.trigger_type === "sentry") {
+    // Sentry: user provides a new client secret
+    const body = await parseJsonBody<{ sentryClientSecret?: string }>(request);
+    if (body instanceof Response) return body;
+    if (!body.sentryClientSecret || typeof body.sentryClientSecret !== "string") {
+      return error("sentryClientSecret is required", 400);
+    }
+    if (!env.REPO_SECRETS_ENCRYPTION_KEY) {
+      return error("Encryption key not configured", 503);
+    }
+    const encrypted = await encryptSentrySecret(
+      body.sentryClientSecret,
+      env.REPO_SECRETS_ENCRYPTION_KEY
+    );
+    await store.update(id, { trigger_auth_data: encrypted } as Record<string, unknown>);
+
+    logger.info("automation.secret_updated", {
+      event: "automation.secret_updated",
+      automation_id: id,
+      request_id: ctx.request_id,
+      trace_id: ctx.trace_id,
+    });
+
+    return json({
+      sentryWebhookUrl: `${workerUrl}/webhooks/sentry/${id}`,
+    });
+  }
+
+  if (automation.trigger_type !== "webhook") {
+    return error("Only webhook and sentry automations support key regeneration", 400);
+  }
+
+  // Webhook: generate a new API key
+  const apiKey = generateWebhookApiKey();
+  const hash = await hashApiKey(apiKey);
+
+  await store.update(id, { trigger_auth_data: hash } as Record<string, unknown>);
+
+  logger.info("automation.key_regenerated", {
+    event: "automation.key_regenerated",
+    automation_id: id,
+    request_id: ctx.request_id,
+    trace_id: ctx.trace_id,
+  });
+
+  return json({
+    webhookApiKey: apiKey,
+    webhookUrl: `${workerUrl}/webhooks/automation/${id}`,
+  });
+}
+
 // ─── Route exports ───────────────────────────────────────────────────────────
 
 export const automationRoutes: Route[] = [
@@ -539,5 +742,10 @@ export const automationRoutes: Route[] = [
     method: "GET",
     pattern: parsePattern("/automations/:id/runs/:runId"),
     handler: handleGetRun,
+  },
+  {
+    method: "POST",
+    pattern: parsePattern("/automations/:id/regenerate-key"),
+    handler: handleRegenerateKey,
   },
 ];

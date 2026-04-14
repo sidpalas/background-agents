@@ -6,6 +6,9 @@ import {
   type IntegrationSettingsMap,
   type GitHubBotSettings,
   type LinearBotSettings,
+  type CodeServerSettings,
+  type SandboxSettings,
+  MAX_TUNNEL_PORTS,
 } from "@open-inspect/shared";
 
 export class IntegrationSettingsValidationError extends Error {
@@ -179,6 +182,16 @@ export class IntegrationSettingsStore {
       this.validateLinearSettings(settings as LinearBotSettings);
     }
 
+    if (integrationId === "code-server") {
+      this.validateCodeServerSettings(settings as CodeServerSettings);
+    }
+
+    if (integrationId === "sandbox") {
+      return this.validateSandboxSettings(
+        settings as SandboxSettings
+      ) as IntegrationSettingsMap[K]["repo"];
+    }
+
     return settings;
   }
 
@@ -256,6 +269,54 @@ export class IntegrationSettingsStore {
     ) {
       throw new IntegrationSettingsValidationError("emitToolProgressActivities must be a boolean");
     }
+
+    if (
+      settings.issueSessionInstructions !== undefined &&
+      typeof settings.issueSessionInstructions !== "string"
+    ) {
+      throw new IntegrationSettingsValidationError("issueSessionInstructions must be a string");
+    }
+
+    if (
+      typeof settings.issueSessionInstructions === "string" &&
+      settings.issueSessionInstructions.length > 10000
+    ) {
+      throw new IntegrationSettingsValidationError(
+        "issueSessionInstructions must be 10000 characters or fewer"
+      );
+    }
+  }
+
+  private validateCodeServerSettings(settings: CodeServerSettings): void {
+    if (settings.enabled !== undefined && typeof settings.enabled !== "boolean") {
+      throw new IntegrationSettingsValidationError("enabled must be a boolean");
+    }
+  }
+
+  private validateSandboxSettings(settings: SandboxSettings): SandboxSettings {
+    if (settings.terminalEnabled !== undefined && typeof settings.terminalEnabled !== "boolean") {
+      throw new IntegrationSettingsValidationError("terminalEnabled must be a boolean");
+    }
+    if (settings.tunnelPorts !== undefined) {
+      if (!Array.isArray(settings.tunnelPorts)) {
+        throw new IntegrationSettingsValidationError("tunnelPorts must be an array of numbers");
+      }
+      const dedupedPorts = [...new Set(settings.tunnelPorts)];
+      if (dedupedPorts.length > MAX_TUNNEL_PORTS) {
+        throw new IntegrationSettingsValidationError(
+          `tunnelPorts must have ${MAX_TUNNEL_PORTS} or fewer entries`
+        );
+      }
+      for (const port of dedupedPorts) {
+        if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+          throw new IntegrationSettingsValidationError(
+            `Invalid port number: ${port}. Must be an integer between 1 and 65535`
+          );
+        }
+      }
+      return { ...settings, tunnelPorts: dedupedPorts };
+    }
+    return settings;
   }
 }
 

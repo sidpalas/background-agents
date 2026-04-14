@@ -25,7 +25,7 @@ from .app import (
     internal_api_secret,
     validate_control_plane_url,
 )
-from .auth.internal import AuthConfigurationError, verify_internal_token
+from .auth import AuthConfigurationError, verify_internal_token
 from .log_config import configure_logging, get_logger
 
 configure_logging()
@@ -54,6 +54,41 @@ def require_auth(authorization: str | None) -> None:
             status_code=503,
             detail=f"Service unavailable: Authentication not configured. {e}",
         )
+
+
+def _resolve_clone_token() -> str | None:
+    """Resolve a VCS clone token based on SCM_PROVIDER.
+
+    - "gitlab": reads GITLAB_ACCESS_TOKEN from the environment.
+    - "github" (default): generates a short-lived GitHub App installation token.
+
+    Returns None if credentials are missing or token generation fails.
+    """
+    from .auth import generate_installation_token
+
+    scm_provider = os.environ.get("SCM_PROVIDER", "github")
+
+    if scm_provider == "gitlab":
+        token = os.environ.get("GITLAB_ACCESS_TOKEN")
+        if not token:
+            log.warn("gitlab.token_missing")
+        return token
+
+    try:
+        app_id = os.environ.get("GITHUB_APP_ID")
+        private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
+        installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
+
+        if app_id and private_key and installation_id:
+            return generate_installation_token(
+                app_id=app_id,
+                private_key=private_key,
+                installation_id=installation_id,
+            )
+    except Exception as e:
+        log.warn("github.token_error", exc=e)
+
+    return None
 
 
 def require_valid_control_plane_url(url: str | None) -> None:
@@ -116,27 +151,12 @@ async def api_create_sandbox(
 
     try:
         # Import types and manager directly
-        from .auth.github_app import generate_installation_token
+        from .sandbox import SessionConfig
         from .sandbox.manager import SandboxConfig, SandboxManager
-        from .sandbox.types import SessionConfig
 
         manager = SandboxManager()
 
-        # Generate GitHub App token for git operations
-        github_app_token = None
-        try:
-            app_id = os.environ.get("GITHUB_APP_ID")
-            private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
-            installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
-
-            if app_id and private_key and installation_id:
-                github_app_token = generate_installation_token(
-                    app_id=app_id,
-                    private_key=private_key,
-                    installation_id=installation_id,
-                )
-        except Exception as e:
-            log.warn("github.token_error", exc=e)
+        clone_token = _resolve_clone_token()
 
         session_config = SessionConfig(
             session_id=request.get("session_id"),
@@ -156,10 +176,12 @@ async def api_create_sandbox(
             session_config=session_config,
             control_plane_url=control_plane_url,
             sandbox_auth_token=request.get("sandbox_auth_token"),
-            clone_token=github_app_token,
+            clone_token=clone_token,
             user_env_vars=request.get("user_env_vars") or None,
             repo_image_id=request.get("repo_image_id") or None,
             repo_image_sha=request.get("repo_image_sha") or None,
+            code_server_enabled=bool(request.get("code_server_enabled", False)),
+            settings=request.get("sandbox_settings") or None,
         )
 
         handle = await manager.create_sandbox(config)
@@ -171,6 +193,10 @@ async def api_create_sandbox(
                 "modal_object_id": handle.modal_object_id,  # Modal's internal ID for snapshot API
                 "status": handle.status.value,
                 "created_at": handle.created_at,
+                "code_server_url": handle.code_server_url,
+                "code_server_password": handle.code_server_password,
+                "ttyd_url": handle.ttyd_url,
+                "tunnel_urls": handle.tunnel_urls,
             },
         }
     except Exception as e:
@@ -490,7 +516,6 @@ async def api_restore_sandbox(
         raise HTTPException(status_code=400, detail="snapshot_image_id is required")
 
     try:
-        from .auth.github_app import generate_installation_token
         from .sandbox.manager import DEFAULT_SANDBOX_TIMEOUT_SECONDS, SandboxManager
 
         session_config = request.get("session_config", {})
@@ -500,21 +525,10 @@ async def api_restore_sandbox(
         timeout_seconds = int(request.get("timeout_seconds", DEFAULT_SANDBOX_TIMEOUT_SECONDS))
 
         manager = SandboxManager()
+        clone_token = _resolve_clone_token()
 
-        github_app_token = None
-        try:
-            app_id = os.environ.get("GITHUB_APP_ID")
-            private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
-            installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
-
-            if app_id and private_key and installation_id:
-                github_app_token = generate_installation_token(
-                    app_id=app_id,
-                    private_key=private_key,
-                    installation_id=installation_id,
-                )
-        except Exception as e:
-            log.warn("github.token_error", exc=e)
+        code_server_enabled = bool(request.get("code_server_enabled", False))
+        sandbox_settings = request.get("sandbox_settings") or None
 
         # Restore sandbox from snapshot
         handle = await manager.restore_from_snapshot(
@@ -523,9 +537,11 @@ async def api_restore_sandbox(
             sandbox_id=sandbox_id,
             control_plane_url=control_plane_url,
             sandbox_auth_token=sandbox_auth_token,
-            clone_token=github_app_token,
+            clone_token=clone_token,
             user_env_vars=user_env_vars,
             timeout_seconds=timeout_seconds,
+            code_server_enabled=code_server_enabled,
+            settings=sandbox_settings,
         )
 
         return {
@@ -534,6 +550,10 @@ async def api_restore_sandbox(
                 "sandbox_id": handle.sandbox_id,
                 "modal_object_id": handle.modal_object_id,
                 "status": handle.status.value,
+                "code_server_url": handle.code_server_url,
+                "code_server_password": handle.code_server_password,
+                "ttyd_url": handle.ttyd_url,
+                "tunnel_urls": handle.tunnel_urls,
             },
         }
     except HTTPException as e:

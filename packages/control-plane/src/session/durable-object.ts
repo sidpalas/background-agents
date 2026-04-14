@@ -10,10 +10,14 @@
 import { DurableObject } from "cloudflare:workers";
 import { initSchema } from "./schema";
 import { buildSessionInternalUrl, SessionInternalPaths } from "./contracts";
-import { generateId, hashToken, timingSafeEqual } from "../auth/crypto";
-import { getGitHubAppConfig } from "../auth/github-app";
+import { timingSafeEqual } from "@open-inspect/shared";
+import { generateId, hashToken, encryptToken, decryptToken } from "../auth/crypto";
+import { getGitHubAppConfig, getCachedInstallationToken } from "../auth/github-app";
 import { createModalClient } from "../sandbox/client";
+import { createDaytonaRestClient } from "../sandbox/daytona-rest-client";
 import { createModalProvider } from "../sandbox/providers/modal-provider";
+import { createDaytonaProvider } from "../sandbox/providers/daytona-provider";
+import { resolveSandboxBackendName } from "../sandbox/provider-name";
 import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
 import {
@@ -28,10 +32,7 @@ import {
 } from "../sandbox/lifecycle/manager";
 import { RepoImageStore } from "../db/repo-images";
 import { SessionIndexStore } from "../db/session-index";
-import {
-  evaluateExecutionTimeout,
-  DEFAULT_EXECUTION_TIMEOUT_MS,
-} from "../sandbox/lifecycle/decisions";
+import { DEFAULT_EXECUTION_TIMEOUT_MS } from "../sandbox/lifecycle/decisions";
 import {
   createSourceControlProvider as createSourceControlProviderImpl,
   resolveScmProviderFromEnv,
@@ -85,6 +86,7 @@ import {
   type ParticipantsHandler,
 } from "./http/handlers/participants.handler";
 import { MessageService } from "./services/message.service";
+import { createAlarmHandler, type AlarmHandler } from "./alarm/handler";
 
 /**
  * Timeout for WebSocket authentication (in milliseconds).
@@ -100,6 +102,9 @@ const WS_AUTH_TIMEOUT_MS = 30000; // 30 seconds
  * the client to fetch a fresh token on reconnect.
  */
 const WS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/** Statuses that indicate a session is finished — metrics are synced to D1 on these transitions. */
+const TERMINAL_STATUSES: SessionStatus[] = ["completed", "failed", "cancelled"];
 
 export class SessionDO extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -136,6 +141,8 @@ export class SessionDO extends DurableObject<Env> {
   private _pullRequestHandler: PullRequestHandler | null = null;
   // Participants handler (lazily initialized)
   private _participantsHandler: ParticipantsHandler | null = null;
+  // Alarm handler (lazily initialized)
+  private _alarmHandler: AlarmHandler | null = null;
   // Sandbox event processor (lazily initialized)
   private _sandboxEventProcessor: SessionSandboxEventProcessor | null = null;
 
@@ -146,13 +153,15 @@ export class SessionDO extends DurableObject<Env> {
     prompt: (request) => this.messagesHandler.enqueuePrompt(request),
     stop: () => this.messagesHandler.stop(),
     sandboxEvent: (request) => this.sandboxHandler.sandboxEvent(request),
+    createMediaArtifact: (request) => this.sandboxHandler.createMediaArtifact(request),
     listParticipants: () => this.participantsHandler.listParticipants(),
     addParticipant: (request) => this.sandboxHandler.addParticipant(request),
     listEvents: (_request, url) => this.messagesHandler.listEvents(url),
-    listArtifacts: () => this.messagesHandler.listArtifacts(),
+    listArtifacts: (_request, url) => this.messagesHandler.listArtifacts(url),
     listMessages: (_request, url) => this.messagesHandler.listMessages(url),
     createPr: (request) => this.pullRequestHandler.createPr(request),
     wsToken: (request) => this.wsTokenHandler.generateWsToken(request),
+    updateTitle: (request) => this.sessionLifecycleHandler.updateTitle(request),
     archive: (request) => this.sessionLifecycleHandler.archive(request),
     unarchive: (request) => this.sessionLifecycleHandler.unarchive(request),
     verifySandboxToken: (request) => this.sandboxHandler.verifySandboxToken(request),
@@ -368,6 +377,7 @@ export class SessionDO extends DurableObject<Env> {
         },
         isOpenAISecretsConfigured: () =>
           Boolean(this.env.DB && this.env.REPO_SECRETS_ENCRYPTION_KEY),
+        broadcast: (message) => this.broadcast(message),
         generateId: () => generateId(),
         now: () => Date.now(),
         getLog: () => this.log,
@@ -416,6 +426,7 @@ export class SessionDO extends DurableObject<Env> {
         getSandboxSocket: () => this.wsManager.getSandboxSocket(),
         sendToSandbox: (ws, message) => this.wsManager.send(ws, message),
         updateSandboxStatus: (status) => this.updateSandboxStatus(status),
+        broadcast: (message) => this.broadcast(message),
       });
     }
 
@@ -441,6 +452,12 @@ export class SessionDO extends DurableObject<Env> {
             generateId: () => generateId(),
             pushBranchToRemote: (headBranch, pushSpec) =>
               this.pushBranchToRemote(headBranch, pushSpec),
+            broadcastSessionBranch: (branchName) => {
+              this.broadcast({
+                type: "session_branch",
+                branchName,
+              });
+            },
             broadcastArtifactCreated: (artifact) => {
               this.broadcast({
                 type: "artifact_created",
@@ -465,6 +482,21 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     return this._participantsHandler;
+  }
+
+  private get alarmHandler(): AlarmHandler {
+    if (!this._alarmHandler) {
+      this._alarmHandler = createAlarmHandler({
+        repository: this.repository,
+        messageQueue: this.messageQueue,
+        lifecycleManager: this.lifecycleManager,
+        executionTimeoutMs: this.executionTimeoutMs,
+        now: () => Date.now(),
+        getLog: () => this.log,
+      });
+    }
+
+    return this._alarmHandler;
   }
 
   private get sandboxEventProcessor(): SessionSandboxEventProcessor {
@@ -510,14 +542,71 @@ export class SessionDO extends DurableObject<Env> {
    * Create the lifecycle manager with all required adapters.
    */
   private createLifecycleManager(): SandboxLifecycleManager {
-    // Verify Modal configuration
-    if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
-      throw new Error("MODAL_API_SECRET and MODAL_WORKSPACE are required for lifecycle manager");
-    }
+    const sandboxBackend = resolveSandboxBackendName(this.env.SANDBOX_PROVIDER);
 
-    // Create Modal provider
-    const modalClient = createModalClient(this.env.MODAL_API_SECRET, this.env.MODAL_WORKSPACE);
-    const provider = createModalProvider(modalClient);
+    const provider =
+      sandboxBackend === "daytona"
+        ? (() => {
+            if (
+              !this.env.DAYTONA_API_URL ||
+              !this.env.DAYTONA_API_KEY ||
+              !this.env.DAYTONA_BASE_SNAPSHOT
+            ) {
+              throw new Error(
+                "DAYTONA_API_URL, DAYTONA_API_KEY, and DAYTONA_BASE_SNAPSHOT are required when SANDBOX_PROVIDER=daytona"
+              );
+            }
+
+            const daytonaClient = createDaytonaRestClient({
+              apiUrl: this.env.DAYTONA_API_URL,
+              apiKey: this.env.DAYTONA_API_KEY,
+              target: this.env.DAYTONA_TARGET,
+              baseSnapshot: this.env.DAYTONA_BASE_SNAPSHOT,
+              autoStopIntervalMinutes: parseInt(
+                this.env.DAYTONA_AUTO_STOP_INTERVAL_MINUTES || "120",
+                10
+              ),
+              autoArchiveIntervalMinutes: parseInt(
+                this.env.DAYTONA_AUTO_ARCHIVE_INTERVAL_MINUTES || "10080",
+                10
+              ),
+            });
+
+            const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
+            const appConfig = getGitHubAppConfig(this.env);
+
+            const getCloneToken: () => Promise<string | null> =
+              scmProvider === "gitlab"
+                ? () => Promise.resolve(this.env.GITLAB_ACCESS_TOKEN ?? null)
+                : appConfig
+                  ? () => getCachedInstallationToken(appConfig, this.env)
+                  : () => Promise.resolve(null);
+
+            return createDaytonaProvider(
+              daytonaClient,
+              {
+                scmProvider,
+                gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
+                // Reuses API key as HMAC secret for code-server password derivation
+                // (distinct message prefix prevents collision with auth use)
+                codeServerPasswordSecret: this.env.DAYTONA_API_KEY,
+              },
+              getCloneToken
+            );
+          })()
+        : (() => {
+            if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
+              throw new Error(
+                "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
+              );
+            }
+
+            const modalClient = createModalClient(
+              this.env.MODAL_API_SECRET,
+              this.env.MODAL_WORKSPACE
+            );
+            return createModalProvider(modalClient);
+          })();
 
     // Storage adapter
     const storage: SandboxStorage = {
@@ -527,6 +616,7 @@ export class SessionDO extends DurableObject<Env> {
       getUserEnvVars: () => this.getUserEnvVars(),
       updateSandboxStatus: (status) => this.updateSandboxStatus(status),
       updateSandboxForSpawn: (data) => this.repository.updateSandboxForSpawn(data),
+      updateSandboxForResume: (data) => this.repository.updateSandboxForResume(data),
       updateSandboxModalObjectId: (id) => this.repository.updateSandboxModalObjectId(id),
       updateSandboxSnapshotImageId: (sandboxId, imageId) =>
         this.repository.updateSandboxSnapshotImageId(sandboxId, imageId),
@@ -537,6 +627,23 @@ export class SessionDO extends DurableObject<Env> {
       resetCircuitBreaker: () => this.repository.resetCircuitBreaker(),
       setLastSpawnError: (error, timestamp) =>
         this.repository.updateSandboxSpawnError(error, timestamp),
+      updateSandboxCodeServer: async (url, password) => {
+        const encrypted = this.env.REPO_SECRETS_ENCRYPTION_KEY
+          ? await encryptToken(password, this.env.REPO_SECRETS_ENCRYPTION_KEY)
+          : password;
+        this.repository.updateSandboxCodeServer(url, encrypted);
+      },
+      clearSandboxCodeServer: () => this.repository.clearSandboxCodeServer(),
+      clearSandboxCodeServerUrl: () => this.repository.clearSandboxCodeServerUrl(),
+      updateSandboxTunnelUrls: (urls) => this.repository.updateSandboxTunnelUrls(urls),
+      clearSandboxTunnelUrls: () => this.repository.clearSandboxTunnelUrls(),
+      updateSandboxTtyd: async (url, token) => {
+        const encrypted = this.env.REPO_SECRETS_ENCRYPTION_KEY
+          ? await encryptToken(token, this.env.REPO_SECRETS_ENCRYPTION_KEY)
+          : token;
+        this.repository.updateSandboxTtyd(url, encrypted);
+      },
+      clearSandboxTtyd: () => this.repository.clearSandboxTtyd(),
     };
 
     // Broadcaster adapter
@@ -595,7 +702,7 @@ export class SessionDO extends DurableObject<Env> {
 
     // Create repo image lookup if D1 is available
     let repoImageLookup: RepoImageLookup | undefined;
-    if (this.env.DB) {
+    if (this.env.DB && sandboxBackend === "modal") {
       const repoImageStore = new RepoImageStore(this.env.DB);
       repoImageLookup = {
         getLatestReady: (repoOwner, repoName, baseBranch) =>
@@ -898,31 +1005,7 @@ export class SessionDO extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     this.ensureInitialized();
-
-    // Execution timeout check: if a message has been in 'processing' longer than
-    // the configured timeout, fail it. This is idempotent — if the message was
-    // already failed (by onSandboxTerminating or a prior alarm), getProcessingMessageWithStartedAt()
-    // returns null and we skip straight to handleAlarm().
-    const processing = this.repository.getProcessingMessageWithStartedAt();
-    if (processing?.started_at) {
-      const now = Date.now();
-      const result = evaluateExecutionTimeout(
-        processing.started_at,
-        { timeoutMs: this.executionTimeoutMs },
-        now
-      );
-      if (result.isTimedOut) {
-        this.log.warn("Execution timeout: message stuck in processing", {
-          event: "execution.timeout",
-          message_id: processing.id,
-          elapsed_ms: result.elapsedMs,
-          timeout_ms: this.executionTimeoutMs,
-        });
-        await this.messageQueue.failStuckProcessingMessage();
-      }
-    }
-
-    await this.lifecycleManager.handleAlarm();
+    await this.alarmHandler.handle();
   }
 
   /**
@@ -1097,13 +1180,15 @@ export class SessionDO extends DurableObject<Env> {
     // Gather session state and replay events, then send as a single message.
     // Fetch sandbox once and thread it through to avoid a redundant SQLite read.
     const sandbox = this.getSandbox();
-    const state = this.getSessionState(sandbox);
+    const state = await this.getSessionState(sandbox);
+    const artifacts = this.messageService.listArtifacts();
     const replay = this.getReplayData();
 
     this.safeSend(ws, {
       type: "subscribed",
       sessionId: state.id,
       state,
+      artifacts: artifacts.artifacts,
       participantId: participant.id,
       participant: {
         participantId: participant.id,
@@ -1367,6 +1452,35 @@ export class SessionDO extends DurableObject<Env> {
     );
   }
 
+  private syncSessionMetrics(sessionId: string): void {
+    if (!this.env.DB) return;
+
+    const session = this.repository.getSession();
+    if (!session) return;
+
+    const messageCount = this.repository.getMessageCount();
+    const activeDurationMs = this.repository.getActiveDurationMs();
+    const artifacts = this.repository.listArtifacts();
+    const prCount = artifacts.filter((a) => a.type === "pr").length;
+
+    const sessionStore = new SessionIndexStore(this.env.DB);
+    this.ctx.waitUntil(
+      sessionStore
+        .updateMetrics(sessionId, {
+          totalCost: session.total_cost ?? 0,
+          activeDurationMs,
+          messageCount,
+          prCount,
+        })
+        .catch((error) => {
+          this.log.error("session_index.update_metrics.background_error", {
+            session_id: sessionId,
+            error,
+          });
+        })
+    );
+  }
+
   private async transitionSessionStatus(status: SessionStatus): Promise<boolean> {
     const session = this.getSession();
     if (!session) return false;
@@ -1374,6 +1488,9 @@ export class SessionDO extends DurableObject<Env> {
     const publicSessionId = this.getPublicSessionId(session);
     if (session.status === status) {
       this.syncSessionIndexStatus(publicSessionId, status, session.updated_at);
+      if (TERMINAL_STATUSES.includes(status)) {
+        this.syncSessionMetrics(publicSessionId);
+      }
       return false;
     }
 
@@ -1382,6 +1499,10 @@ export class SessionDO extends DurableObject<Env> {
     this.syncSessionIndexStatus(publicSessionId, status, updatedAt);
 
     this.broadcast({ type: "session_status", status });
+
+    if (TERMINAL_STATUSES.includes(status)) {
+      this.syncSessionMetrics(publicSessionId);
+    }
 
     // Notify parent session (if this is a child) so its UI can refresh
     this.notifyParentOfStatusChange(session, publicSessionId, status);
@@ -1439,11 +1560,35 @@ export class SessionDO extends DurableObject<Env> {
    * Get current session state.
    * Accepts an optional pre-fetched sandbox row to avoid a redundant SQLite read.
    */
-  private getSessionState(sandbox?: SandboxRow | null): SessionState {
+  private async getSessionState(sandbox?: SandboxRow | null): Promise<SessionState> {
     const session = this.getSession();
     sandbox ??= this.getSandbox();
     const messageCount = this.repository.getMessageCount();
     const isProcessing = this.getIsProcessing();
+
+    // Decrypt code-server password if stored encrypted
+    let codeServerPassword: string | null = sandbox?.code_server_password ?? null;
+    if (codeServerPassword && this.env.REPO_SECRETS_ENCRYPTION_KEY) {
+      try {
+        codeServerPassword = await decryptToken(
+          codeServerPassword,
+          this.env.REPO_SECRETS_ENCRYPTION_KEY
+        );
+      } catch {
+        // Key mismatch or corruption — don't leak ciphertext to clients
+        codeServerPassword = null;
+      }
+    }
+
+    // Decrypt ttyd token if stored encrypted
+    let ttydToken: string | null = sandbox?.ttyd_token ?? null;
+    if (ttydToken && this.env.REPO_SECRETS_ENCRYPTION_KEY) {
+      try {
+        ttydToken = await decryptToken(ttydToken, this.env.REPO_SECRETS_ENCRYPTION_KEY);
+      } catch {
+        ttydToken = null;
+      }
+    }
 
     return {
       id: this.getPublicSessionId(session),
@@ -1460,6 +1605,12 @@ export class SessionDO extends DurableObject<Env> {
       reasoningEffort: session?.reasoning_effort ?? undefined,
       isProcessing,
       parentSessionId: session?.parent_session_id ?? null,
+      totalCost: session?.total_cost ?? 0,
+      codeServerUrl: sandbox?.code_server_url ?? null,
+      codeServerPassword,
+      tunnelUrls: sandbox?.tunnel_urls ? this.safeParseTunnelUrls(sandbox.tunnel_urls) : null,
+      ttydUrl: sandbox?.ttyd_url ?? null,
+      ttydToken,
     };
   }
 
@@ -1468,6 +1619,15 @@ export class SessionDO extends DurableObject<Env> {
    */
   private getIsProcessing(): boolean {
     return this.repository.getProcessingMessage() !== null;
+  }
+
+  private safeParseTunnelUrls(raw: string): Record<string, string> | null {
+    try {
+      return JSON.parse(raw) as Record<string, string>;
+    } catch {
+      this.log.warn("Invalid sandbox tunnel_urls JSON");
+      return null;
+    }
   }
 
   // Database helpers

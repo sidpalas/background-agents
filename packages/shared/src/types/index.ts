@@ -124,6 +124,26 @@ export interface ManualPullRequestArtifactMetadata {
   provider?: string;
 }
 
+/** Metadata stored on screenshot artifacts. */
+export interface ScreenshotArtifactMetadata {
+  /** R2 object key */
+  objectKey: string;
+  /** MIME type: image/png, image/jpeg, image/webp */
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Viewport dimensions at capture time */
+  viewport?: { width: number; height: number };
+  /** URL that was screenshotted */
+  sourceUrl?: string;
+  /** Whether this is a full-page screenshot */
+  fullPage?: boolean;
+  /** Whether element annotations are overlaid */
+  annotated?: boolean;
+  /** Caption or description provided by the agent */
+  caption?: string;
+}
+
 // Pull request info
 export interface PullRequest {
   number: number;
@@ -209,8 +229,10 @@ export type SandboxEvent =
   | {
       type: "artifact";
       artifactType: string;
+      artifactId?: string;
       url: string;
       metadata?: Record<string, unknown>;
+      messageId?: string;
       sandboxId: string;
       timestamp: number;
     }
@@ -261,6 +283,7 @@ export type ServerMessage =
       type: "subscribed";
       sessionId: string;
       state: SessionState;
+      artifacts: SessionArtifact[];
       participantId: string;
       participant?: { participantId: string; name: string; avatar?: string };
       replay?: {
@@ -280,10 +303,8 @@ export type ServerMessage =
   | { type: "sandbox_status"; status: SandboxStatus }
   | { type: "sandbox_ready" }
   | { type: "sandbox_error"; error: string }
-  | {
-      type: "artifact_created";
-      artifact: { id: string; type: string; url: string; prNumber?: number };
-    }
+  | { type: "artifact_created"; artifact: SessionArtifact }
+  | { type: "session_branch"; branchName: string }
   | { type: "snapshot_saved"; imageId: string; reason: string }
   | { type: "sandbox_restored"; message: string }
   | { type: "sandbox_warning"; message: string }
@@ -295,12 +316,16 @@ export type ServerMessage =
       cursor: { timestamp: number; id: string } | null;
     }
   | { type: "session_status"; status: SessionStatus }
+  | { type: "session_title"; title: string }
   | {
       type: "child_session_update";
       childSessionId: string;
       status: SessionStatus;
       title: string | null;
     }
+  | { type: "code_server_info"; url: string; password: string }
+  | { type: "ttyd_info"; url: string; token: string }
+  | { type: "tunnel_urls"; urls: Record<string, string> }
   | { type: "error"; code: string; message: string };
 
 // Session state sent to clients
@@ -319,6 +344,12 @@ export interface SessionState {
   reasoningEffort?: string;
   isProcessing?: boolean;
   parentSessionId?: string | null;
+  totalCost?: number;
+  codeServerUrl?: string | null;
+  codeServerPassword?: string | null;
+  tunnelUrls?: Record<string, string> | null;
+  ttydUrl?: string | null;
+  ttydToken?: string | null;
 }
 
 // Participant presence info
@@ -340,6 +371,8 @@ export interface InstallationRepository {
   description: string | null;
   private: boolean;
   defaultBranch: string;
+  language?: string | null;
+  topics?: string[];
 }
 
 export interface RepoMetadata {
@@ -363,6 +396,8 @@ export interface RepoConfig {
   description: string;
   defaultBranch: string;
   private: boolean;
+  language?: string | null;
+  topics?: string[];
   aliases?: string[];
   keywords?: string[];
   channelAssociations?: string[];
@@ -433,6 +468,7 @@ export interface UserPreferences {
   userId: string;
   model: string;
   reasoningEffort?: string;
+  branch?: string;
   updatedAt: number;
 }
 
@@ -523,6 +559,7 @@ export interface SpawnContext {
   baseBranch: string | null;
   owner: {
     userId: string;
+    scmUserId: string | null;
     scmLogin: string | null;
     scmName: string | null;
     scmEmail: string | null;
@@ -550,11 +587,71 @@ export interface ChildSessionDetail {
   recentEvents: Array<{ type: string; data: unknown; createdAt: number }>;
 }
 
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+export const ANALYTICS_DAYS = [7, 14, 30, 90] as const;
+export type AnalyticsDays = (typeof ANALYTICS_DAYS)[number];
+
+export const ANALYTICS_BREAKDOWN_BY = ["user", "repo"] as const;
+export type AnalyticsBreakdownBy = (typeof ANALYTICS_BREAKDOWN_BY)[number];
+
+export interface AnalyticsStatusBreakdown {
+  created: number;
+  active: number;
+  completed: number;
+  failed: number;
+  archived: number;
+  cancelled: number;
+}
+
+export interface AnalyticsSummaryResponse {
+  totalSessions: number;
+  activeUsers: number;
+  totalCost: number;
+  avgCost: number;
+  totalPrs: number;
+  statusBreakdown: AnalyticsStatusBreakdown;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  date: string;
+  groups: Record<string, number>;
+}
+
+export interface AnalyticsTimeseriesResponse {
+  series: AnalyticsTimeseriesPoint[];
+}
+
+export interface AnalyticsBreakdownEntry {
+  key: string;
+  sessions: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  cost: number;
+  prs: number;
+  messageCount: number;
+  avgDuration: number;
+  lastActive: number;
+}
+
+export interface AnalyticsBreakdownResponse {
+  entries: AnalyticsBreakdownEntry[];
+}
+
 // ─── Automation Engine ────────────────────────────────────────────────────────
 
-export type AutomationTriggerType = "schedule";
+export type AutomationTriggerType =
+  | "schedule"
+  | "github_event"
+  | "linear_event"
+  | "sentry"
+  | "webhook";
 
 export type AutomationRunStatus = "starting" | "running" | "completed" | "failed" | "skipped";
+
+// Re-export TriggerConfig for use in automation interfaces below
+import type { TriggerConfig } from "../triggers/conditions";
 
 export interface Automation {
   id: string;
@@ -568,6 +665,7 @@ export interface Automation {
   scheduleCron: string | null;
   scheduleTz: string;
   model: string;
+  reasoningEffort: string | null;
   enabled: boolean;
   nextRunAt: number | null;
   consecutiveFailures: number;
@@ -575,6 +673,8 @@ export interface Automation {
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
+  eventType: string | null;
+  triggerConfig: TriggerConfig | null;
 }
 
 export interface CreateAutomationRequest {
@@ -584,9 +684,13 @@ export interface CreateAutomationRequest {
   baseBranch?: string;
   instructions: string;
   triggerType?: AutomationTriggerType;
-  scheduleCron: string;
-  scheduleTz: string;
+  scheduleCron?: string;
+  scheduleTz?: string;
   model?: string;
+  reasoningEffort?: string | null;
+  eventType?: string;
+  triggerConfig?: TriggerConfig;
+  sentryClientSecret?: string;
 }
 
 export interface UpdateAutomationRequest {
@@ -595,7 +699,10 @@ export interface UpdateAutomationRequest {
   scheduleCron?: string;
   scheduleTz?: string;
   model?: string;
+  reasoningEffort?: string | null;
   baseBranch?: string;
+  eventType?: string;
+  triggerConfig?: TriggerConfig;
 }
 
 export interface AutomationRun {
@@ -611,6 +718,8 @@ export interface AutomationRun {
   createdAt: number;
   sessionTitle: string | null;
   artifactSummary: string | null;
+  triggerKey: string | null;
+  concurrencyKey: string | null;
 }
 
 export interface ListAutomationsResponse {

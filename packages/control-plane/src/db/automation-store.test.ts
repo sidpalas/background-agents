@@ -89,6 +89,7 @@ const sampleRow: AutomationRow = {
   schedule_cron: "0 9 * * *",
   schedule_tz: "UTC",
   model: "anthropic/claude-sonnet-4-6",
+  reasoning_effort: null,
   enabled: 1,
   next_run_at: now + 86400000,
   consecutive_failures: 0,
@@ -96,6 +97,9 @@ const sampleRow: AutomationRow = {
   created_at: now,
   updated_at: now,
   deleted_at: null,
+  event_type: null,
+  trigger_config: null,
+  trigger_auth_data: null,
 };
 
 const sampleRunRow: AutomationRunRow = {
@@ -109,6 +113,8 @@ const sampleRunRow: AutomationRunRow = {
   started_at: null,
   completed_at: null,
   created_at: now,
+  trigger_key: null,
+  concurrency_key: null,
 };
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -122,8 +128,11 @@ describe("toAutomation", () => {
     expect(automation.baseBranch).toBe("main");
     expect(automation.scheduleCron).toBe("0 9 * * *");
     expect(automation.scheduleTz).toBe("UTC");
+    expect(automation.reasoningEffort).toBeNull();
     expect(automation.enabled).toBe(true);
     expect(automation.triggerType).toBe("schedule");
+    expect(automation.eventType).toBeNull();
+    expect(automation.triggerConfig).toBeNull();
     expect(automation.consecutiveFailures).toBe(0);
     expect(automation.createdBy).toBe("user-1");
   });
@@ -147,6 +156,8 @@ describe("toAutomationRun", () => {
     expect(run.sessionTitle).toBe("Test Session");
     expect(run.artifactSummary).toBe("2 artifacts");
     expect(run.status).toBe("starting");
+    expect(run.triggerKey).toBeNull();
+    expect(run.concurrencyKey).toBeNull();
   });
 });
 

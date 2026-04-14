@@ -50,6 +50,9 @@ function createMockSession(overrides: Partial<SessionRow> = {}): SessionRow {
     parent_session_id: null,
     spawn_source: "user" as const,
     spawn_depth: 0,
+    code_server_enabled: 0,
+    total_cost: 0,
+    sandbox_settings: null,
     created_at: Date.now() - 60000,
     updated_at: Date.now(),
     ...overrides,
@@ -73,6 +76,11 @@ function createMockSandbox(
     last_activity: Date.now() - 30000,
     last_spawn_error: null,
     last_spawn_error_at: null,
+    code_server_url: null,
+    code_server_password: null,
+    tunnel_urls: null,
+    ttyd_url: null,
+    ttyd_token: null,
     created_at: Date.now() - 60000,
     spawn_failure_count: 0,
     last_spawn_failure: 0,
@@ -152,6 +160,46 @@ function createMockStorage(
       if (sandbox) {
         sandbox.last_spawn_error = error;
         sandbox.last_spawn_error_at = timestamp;
+      }
+    }),
+    updateSandboxCodeServer: vi.fn(async (url: string, password: string) => {
+      calls.push(`updateSandboxCodeServer:${url}`);
+      if (sandbox) {
+        sandbox.code_server_url = url;
+        sandbox.code_server_password = password;
+      }
+    }),
+    clearSandboxCodeServer: vi.fn(() => {
+      calls.push("clearSandboxCodeServer");
+      if (sandbox) {
+        sandbox.code_server_url = null;
+        sandbox.code_server_password = null;
+      }
+    }),
+    updateSandboxTunnelUrls: vi.fn(async (urls: Record<string, string>) => {
+      calls.push(`updateSandboxTunnelUrls`);
+      if (sandbox) {
+        sandbox.tunnel_urls = JSON.stringify(urls);
+      }
+    }),
+    clearSandboxTunnelUrls: vi.fn(() => {
+      calls.push("clearSandboxTunnelUrls");
+      if (sandbox) {
+        sandbox.tunnel_urls = null;
+      }
+    }),
+    updateSandboxTtyd: vi.fn(async (url: string, token: string) => {
+      calls.push("updateSandboxTtyd");
+      if (sandbox) {
+        sandbox.ttyd_url = url;
+        sandbox.ttyd_token = token;
+      }
+    }),
+    clearSandboxTtyd: vi.fn(() => {
+      calls.push("clearSandboxTtyd");
+      if (sandbox) {
+        sandbox.ttyd_url = null;
+        sandbox.ttyd_token = null;
       }
     }),
   };
@@ -279,6 +327,32 @@ describe("SandboxLifecycleManager", () => {
       ).toBe(true);
     });
 
+    it("schedules connecting timeout alarm after spawn", async () => {
+      const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const alarmScheduler = createMockAlarmScheduler();
+      const config = createTestConfig();
+
+      const manager = new SandboxLifecycleManager(
+        createMockProvider(),
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        alarmScheduler,
+        createMockIdGenerator(),
+        config
+      );
+
+      const before = Date.now();
+      await manager.spawnSandbox();
+      const after = Date.now();
+
+      expect(alarmScheduler.alarms.length).toBe(1);
+      const scheduledTime = alarmScheduler.alarms[0];
+      expect(scheduledTime).toBeGreaterThanOrEqual(before + config.connectingTimeout.timeoutMs);
+      expect(scheduledTime).toBeLessThanOrEqual(after + config.connectingTimeout.timeoutMs);
+    });
+
     it("passes user env vars to provider", async () => {
       const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
       const userEnvVars = { DATABASE_URL: "postgres://example" };
@@ -387,6 +461,35 @@ describe("SandboxLifecycleManager", () => {
 
       expect(provider.restoreFromSnapshot).toHaveBeenCalled();
       expect(provider.createSandbox).not.toHaveBeenCalled();
+    });
+
+    it("schedules connecting timeout alarm after restore", async () => {
+      const sandbox = createMockSandbox({
+        status: "stopped",
+        snapshot_image_id: "img-abc123",
+      });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const alarmScheduler = createMockAlarmScheduler();
+      const config = createTestConfig();
+
+      const manager = new SandboxLifecycleManager(
+        createMockProvider(),
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        alarmScheduler,
+        createMockIdGenerator(),
+        config
+      );
+
+      const before = Date.now();
+      await manager.spawnSandbox();
+      const after = Date.now();
+
+      expect(alarmScheduler.alarms.length).toBe(1);
+      const scheduledTime = alarmScheduler.alarms[0];
+      expect(scheduledTime).toBeGreaterThanOrEqual(before + config.connectingTimeout.timeoutMs);
+      expect(scheduledTime).toBeLessThanOrEqual(after + config.connectingTimeout.timeoutMs);
     });
 
     it("stores providerObjectId after successful restore for future snapshots", async () => {
@@ -928,6 +1031,94 @@ describe("SandboxLifecycleManager", () => {
       await manager.handleAlarm();
       expect(storage.calls).toContain("updateSandboxStatus:stale");
     });
+
+    it("detects connecting timeout and sets failed", async () => {
+      const now = Date.now();
+      const sandbox = createMockSandbox({
+        status: "connecting" as SandboxStatus,
+        created_at: now - 130_000, // 130s ago, past 120s timeout
+        last_heartbeat: null,
+      });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const broadcaster = createMockBroadcaster();
+      const provider = createMockProvider();
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        broadcaster,
+        createMockWebSocketManager(),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.handleAlarm();
+
+      expect(storage.calls).toContain("updateSandboxStatus:failed");
+      expect(storage.calls).toContain("clearSandboxCodeServer");
+      expect(broadcaster.messages.some((m) => (m as { status?: string }).status === "failed")).toBe(
+        true
+      );
+      expect(
+        broadcaster.messages.some((m) => (m as { type?: string }).type === "sandbox_error")
+      ).toBe(true);
+      // Should NOT trigger snapshot (nothing to snapshot)
+      expect(provider.takeSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("does not timeout connecting sandbox within timeout window", async () => {
+      const now = Date.now();
+      const sandbox = createMockSandbox({
+        status: "connecting" as SandboxStatus,
+        created_at: now - 30_000, // 30s ago, well within 120s timeout
+        last_heartbeat: null,
+      });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const alarmScheduler = createMockAlarmScheduler();
+
+      const manager = new SandboxLifecycleManager(
+        createMockProvider(),
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(),
+        alarmScheduler,
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.handleAlarm();
+
+      expect(storage.calls).not.toContain("updateSandboxStatus:failed");
+      // Should schedule a follow-up alarm
+      expect(alarmScheduler.alarms.length).toBe(1);
+    });
+
+    it("calls onSandboxTerminating callback on connecting timeout", async () => {
+      const now = Date.now();
+      const sandbox = createMockSandbox({
+        status: "connecting" as SandboxStatus,
+        created_at: now - 130_000,
+        last_heartbeat: null,
+      });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const onSandboxTerminating = vi.fn().mockResolvedValue(undefined);
+
+      const manager = new SandboxLifecycleManager(
+        createMockProvider(),
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig(),
+        { onSandboxTerminating }
+      );
+
+      await manager.handleAlarm();
+
+      expect(onSandboxTerminating).toHaveBeenCalledOnce();
+    });
   });
 
   describe("scheduleDisconnectCheck", () => {
@@ -1238,6 +1429,224 @@ describe("SandboxLifecycleManager", () => {
           repoImageSha: null,
         })
       );
+    });
+  });
+
+  describe("sandbox settings", () => {
+    it("doSpawn() passes sandboxSettings from session to provider config", async () => {
+      const session = createMockSession({
+        sandbox_settings: '{"tunnelPorts":[3000]}',
+      });
+      const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
+      const storage = createMockStorage(session, sandbox);
+      const provider = createMockProvider();
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(provider.createSandbox).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxSettings: { tunnelPorts: [3000] },
+        })
+      );
+    });
+
+    it("doSpawn() passes empty settings when sandbox_settings is null", async () => {
+      const session = createMockSession({ sandbox_settings: null });
+      const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
+      const storage = createMockStorage(session, sandbox);
+      const provider = createMockProvider();
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(provider.createSandbox).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxSettings: {},
+        })
+      );
+    });
+
+    it("doSpawn() sanitizes malformed tunnelPorts from stored settings", async () => {
+      const session = createMockSession({
+        sandbox_settings: '{"tunnelPorts":["not-a-number", -1, 99999, 3000]}',
+      });
+      const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
+      const storage = createMockStorage(session, sandbox);
+      const provider = createMockProvider();
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(provider.createSandbox).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxSettings: { tunnelPorts: [3000] },
+        })
+      );
+    });
+
+    it("doSpawn() broadcasts tunnel_urls when provider returns them", async () => {
+      const session = createMockSession({
+        sandbox_settings: '{"tunnelPorts":[3000]}',
+      });
+      const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
+      const storage = createMockStorage(session, sandbox);
+      const broadcaster = createMockBroadcaster();
+      const provider = createMockProvider({
+        createSandbox: vi.fn(async (config: CreateSandboxConfig) => ({
+          sandboxId: config.sandboxId,
+          providerObjectId: "provider-obj-123",
+          status: "connecting",
+          createdAt: Date.now(),
+          tunnelUrls: { "3000": "https://tunnel.example.com" },
+        })),
+      });
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        broadcaster,
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(storage.calls).toContain("updateSandboxTunnelUrls");
+      expect(
+        broadcaster.messages.some(
+          (m) =>
+            (m as { type: string }).type === "tunnel_urls" &&
+            (m as { urls: Record<string, string> }).urls["3000"] === "https://tunnel.example.com"
+        )
+      ).toBe(true);
+    });
+
+    it("restoreFromSnapshot() passes sandboxSettings from session to provider config", async () => {
+      const session = createMockSession({
+        sandbox_settings: '{"tunnelPorts":[3000]}',
+      });
+      const sandbox = createMockSandbox({
+        status: "stopped",
+        snapshot_image_id: "img-abc123",
+      });
+      const storage = createMockStorage(session, sandbox);
+      const provider = createMockProvider();
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(provider.restoreFromSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxSettings: { tunnelPorts: [3000] },
+        })
+      );
+    });
+
+    it("restoreFromSnapshot() passes empty settings when sandbox_settings is null", async () => {
+      const session = createMockSession({ sandbox_settings: null });
+      const sandbox = createMockSandbox({
+        status: "stopped",
+        snapshot_image_id: "img-abc123",
+      });
+      const storage = createMockStorage(session, sandbox);
+      const provider = createMockProvider();
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(provider.restoreFromSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sandboxSettings: {},
+        })
+      );
+    });
+
+    it("restoreFromSnapshot() broadcasts tunnel_urls when provider returns them", async () => {
+      const session = createMockSession({
+        sandbox_settings: '{"tunnelPorts":[3000]}',
+      });
+      const sandbox = createMockSandbox({
+        status: "stopped",
+        snapshot_image_id: "img-abc123",
+      });
+      const storage = createMockStorage(session, sandbox);
+      const broadcaster = createMockBroadcaster();
+      const provider = createMockProvider({
+        restoreFromSnapshot: vi.fn(async (config: RestoreConfig) => ({
+          success: true,
+          sandboxId: config.sandboxId,
+          tunnelUrls: { "3000": "https://tunnel.example.com" },
+        })),
+      });
+
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        broadcaster,
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(storage.calls).toContain("updateSandboxTunnelUrls");
+      expect(
+        broadcaster.messages.some(
+          (m) =>
+            (m as { type: string }).type === "tunnel_urls" &&
+            (m as { urls: Record<string, string> }).urls["3000"] === "https://tunnel.example.com"
+        )
+      ).toBe(true);
     });
   });
 });

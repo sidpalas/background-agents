@@ -26,6 +26,7 @@ function makeAutomation(overrides?: Partial<AutomationRow>): AutomationRow {
     schedule_cron: "0 9 * * *",
     schedule_tz: "UTC",
     model: "anthropic/claude-sonnet-4-6",
+    reasoning_effort: null,
     enabled: 1,
     next_run_at: now + 86400000,
     consecutive_failures: 0,
@@ -33,6 +34,9 @@ function makeAutomation(overrides?: Partial<AutomationRow>): AutomationRow {
     created_at: now,
     updated_at: now,
     deleted_at: null,
+    event_type: null,
+    trigger_config: null,
+    trigger_auth_data: null,
     ...overrides,
   };
 }
@@ -50,6 +54,8 @@ function makeRun(automationId: string, overrides?: Partial<AutomationRunRow>): A
     started_at: null,
     completed_at: null,
     created_at: now,
+    trigger_key: null,
+    concurrency_key: null,
     ...overrides,
   };
 }
