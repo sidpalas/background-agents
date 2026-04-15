@@ -45,6 +45,15 @@ export {
   type DaytonaCreateSandboxParams,
 } from "./daytona-rest-client";
 export {
+  DockerSandboxClient,
+  DockerSandboxApiError,
+  createDockerSandboxClient,
+  type DockerSandboxCreateRequest,
+  type DockerSandboxCreateResponse,
+  type DockerSandboxStopResponse,
+} from "./docker-client";
+export { DockerSandboxProvider, createDockerProvider } from "./providers/docker-provider";
+export {
   resolveSandboxBackendName,
   isModalSandboxBackend,
   type SandboxBackendName,
