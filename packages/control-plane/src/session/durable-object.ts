@@ -16,9 +16,11 @@ import { getGitHubAppConfig, getCachedInstallationToken } from "../auth/github-a
 import { createModalClient } from "../sandbox/client";
 import { createDaytonaRestClient } from "../sandbox/daytona-rest-client";
 import { createDockerSandboxClient } from "../sandbox/docker-client";
+import { createOpenComputerClient } from "../sandbox/opencomputer-client";
 import { createModalProvider } from "../sandbox/providers/modal-provider";
 import { createDaytonaProvider } from "../sandbox/providers/daytona-provider";
 import { createDockerProvider } from "../sandbox/providers/docker-provider";
+import { createOpenComputerProvider } from "../sandbox/providers/opencomputer-provider";
 import { resolveSandboxBackendName } from "../sandbox/provider-name";
 import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
@@ -167,6 +169,7 @@ export class SessionDO extends DurableObject<Env> {
     archive: (request) => this.sessionLifecycleHandler.archive(request),
     unarchive: (request) => this.sessionLifecycleHandler.unarchive(request),
     verifySandboxToken: (request) => this.sandboxHandler.verifySandboxToken(request),
+    reportSandboxError: (request) => this.handleReportedSandboxError(request),
     openaiTokenRefresh: () => this.sandboxHandler.openaiTokenRefresh(),
     spawnContext: () => this.childSessionsHandler.getSpawnContext(),
     childSummary: () => this.childSessionsHandler.getChildSummary(),
@@ -626,19 +629,55 @@ export class SessionDO extends DurableObject<Env> {
                 getCloneToken
               );
             })()
-          : (() => {
-              if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
-                throw new Error(
-                  "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
-                );
-              }
+          : sandboxBackend === "opencomputer"
+            ? (() => {
+                if (!this.env.OPENCOMPUTER_API_KEY) {
+                  throw new Error(
+                    "OPENCOMPUTER_API_KEY is required when SANDBOX_PROVIDER=opencomputer"
+                  );
+                }
 
-              const modalClient = createModalClient(
-                this.env.MODAL_API_SECRET,
-                this.env.MODAL_WORKSPACE
-              );
-              return createModalProvider(modalClient);
-            })();
+                const openComputerClient = createOpenComputerClient({
+                  apiUrl: this.env.OPENCOMPUTER_API_URL || "https://app.opencomputer.dev/api",
+                  apiKey: this.env.OPENCOMPUTER_API_KEY,
+                });
+
+                const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
+                const appConfig = getGitHubAppConfig(this.env);
+
+                const getCloneToken: () => Promise<string | null> =
+                  scmProvider === "gitlab"
+                    ? () => Promise.resolve(this.env.GITLAB_ACCESS_TOKEN ?? null)
+                    : appConfig
+                      ? () => getCachedInstallationToken(appConfig, this.env)
+                      : () => Promise.resolve(null);
+
+                return createOpenComputerProvider(
+                  openComputerClient,
+                  {
+                    scmProvider,
+                    gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
+                    apiKey: this.env.OPENCOMPUTER_API_KEY,
+                    snapshot: this.env.OPENCOMPUTER_SNAPSHOT,
+                    templateId: this.env.OPENCOMPUTER_TEMPLATE_ID,
+                    previewBaseDomain: this.env.OPENCOMPUTER_PREVIEW_BASE_DOMAIN,
+                  },
+                  getCloneToken
+                );
+              })()
+            : (() => {
+                if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
+                  throw new Error(
+                    "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
+                  );
+                }
+
+                const modalClient = createModalClient(
+                  this.env.MODAL_API_SECRET,
+                  this.env.MODAL_WORKSPACE
+                );
+                return createModalProvider(modalClient);
+              })();
 
     // Storage adapter
     const storage: SandboxStorage = {
@@ -1777,6 +1816,28 @@ export class SessionDO extends DurableObject<Env> {
 
   private updateSandboxStatus(status: string): void {
     this.repository.updateSandboxStatus(status as SandboxStatus);
+  }
+
+  private async handleReportedSandboxError(request: Request): Promise<Response> {
+    const body = (await request.json()) as { error?: unknown; fatal?: unknown };
+    const errorMessage =
+      typeof body.error === "string" && body.error.trim().length > 0
+        ? body.error.trim()
+        : "Sandbox startup failed";
+    const fatal = body.fatal === true;
+
+    this.log.error("Sandbox reported fatal error", {
+      error: errorMessage,
+      fatal,
+    });
+
+    this.repository.updateSandboxSpawnError(errorMessage, Date.now());
+    if (fatal) {
+      this.updateSandboxStatus("failed");
+    }
+
+    this.broadcast({ type: "sandbox_error", error: errorMessage });
+    return Response.json({ status: "ok" });
   }
 
   // HTTP handlers

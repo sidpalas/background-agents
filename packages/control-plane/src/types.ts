@@ -61,6 +61,7 @@ export interface Env {
   MODAL_TOKEN_SECRET?: string;
   MODAL_API_SECRET?: string; // Shared secret for authenticating with Modal endpoints
   DAYTONA_API_KEY?: string; // Daytona REST API key (Bearer auth + HMAC derivation)
+  OPENCOMPUTER_API_KEY?: string; // OpenComputer REST API key (X-API-Key auth)
   INTERNAL_CALLBACK_SECRET?: string; // For signing callbacks to slack-bot
 
   // GitHub App secrets (for git operations)
@@ -78,7 +79,7 @@ export interface Env {
   WORKER_URL?: string; // Base URL for the worker (for callbacks)
   WEB_APP_URL?: string; // Base URL for the web app (for PR links)
   CF_ACCOUNT_ID?: string; // Cloudflare account ID
-  SANDBOX_PROVIDER?: string; // "modal" (default), "daytona", or "docker"
+  SANDBOX_PROVIDER?: string; // "modal" (default), "daytona", "docker", or "opencomputer"
   MODAL_WORKSPACE?: string; // Modal workspace name (used in Modal endpoint URLs)
   DOCKER_SANDBOX_API_URL?: string; // Local Docker sandbox manager base URL
   DOCKER_SANDBOX_API_TOKEN?: string; // Optional bearer token for Docker sandbox manager
@@ -87,6 +88,10 @@ export interface Env {
   DAYTONA_AUTO_STOP_INTERVAL_MINUTES?: string; // Daytona idle stop interval in minutes
   DAYTONA_AUTO_ARCHIVE_INTERVAL_MINUTES?: string; // Daytona archive interval in minutes
   DAYTONA_TARGET?: string; // Optional Daytona target name
+  OPENCOMPUTER_API_URL?: string; // OpenComputer REST API base URL (defaults to hosted API)
+  OPENCOMPUTER_SNAPSHOT?: string; // Snapshot with Open Inspect runtime installed
+  OPENCOMPUTER_TEMPLATE_ID?: string; // Optional template fallback when no snapshot is configured
+  OPENCOMPUTER_PREVIEW_BASE_DOMAIN?: string; // Preview hostname suffix (default: workers.opencomputer.dev)
 
   // Sandbox lifecycle configuration
   SANDBOX_INACTIVITY_TIMEOUT_MS?: string; // Inactivity timeout in ms (default: 600000 = 10 min)
