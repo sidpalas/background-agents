@@ -29,6 +29,7 @@ export interface SessionInternalRouteHandlers {
   archive: SessionInternalRouteHandler;
   unarchive: SessionInternalRouteHandler;
   verifySandboxToken: SessionInternalRouteHandler;
+  reportSandboxError: SessionInternalRouteHandler;
   openaiTokenRefresh: SessionInternalRouteHandler;
   spawnContext: SessionInternalRouteHandler;
   childSummary: SessionInternalRouteHandler;
@@ -76,6 +77,11 @@ export function createSessionInternalRoutes(
       method: "POST",
       path: SessionInternalPaths.verifySandboxToken,
       handler: handlers.verifySandboxToken,
+    },
+    {
+      method: "POST",
+      path: SessionInternalPaths.reportSandboxError,
+      handler: handlers.reportSandboxError,
     },
     {
       method: "POST",

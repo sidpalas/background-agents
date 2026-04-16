@@ -162,7 +162,8 @@ class AgentBridge:
         self.control_plane_url = control_plane_url
         self.auth_token = auth_token
         self.opencode_port = opencode_port
-        self.opencode_base_url = f"http://localhost:{opencode_port}"
+        # Some sandbox runtimes resolve localhost to IPv6 first, while OpenCode binds on IPv4.
+        self.opencode_base_url = f"http://127.0.0.1:{opencode_port}"
 
         # Logger
         self.log = get_logger(

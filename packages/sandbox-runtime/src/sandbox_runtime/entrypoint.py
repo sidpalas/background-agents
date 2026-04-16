@@ -602,7 +602,8 @@ class SandboxSupervisor:
 
     async def _wait_for_health(self) -> None:
         """Poll health endpoint until server is ready."""
-        health_url = f"http://localhost:{self.OPENCODE_PORT}/global/health"
+        # Some sandbox runtimes resolve localhost to IPv6 first, while OpenCode binds on IPv4.
+        health_url = f"http://127.0.0.1:{self.OPENCODE_PORT}/global/health"
         start_time = time.time()
 
         async with httpx.AsyncClient() as client:
@@ -845,7 +846,7 @@ class SandboxSupervisor:
 
     async def _report_fatal_error(self, message: str) -> None:
         """Report a fatal error to the control plane."""
-        self.log.error("supervisor.fatal", message=message)
+        self.log.error("supervisor.fatal", detail=message)
 
         if not self.control_plane_url:
             return
@@ -853,7 +854,7 @@ class SandboxSupervisor:
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
-                    f"{self.control_plane_url}/sandbox/{self.sandbox_id}/error",
+                    f"{self.control_plane_url}/sessions/{self.session_config.get('session_id', '')}/sandbox/error",
                     json={"error": message, "fatal": True},
                     headers={"Authorization": f"Bearer {self.sandbox_token}"},
                     timeout=5.0,

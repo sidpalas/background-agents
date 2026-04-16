@@ -182,6 +182,7 @@ const PUBLIC_ROUTES: RegExp[] = [
 const SANDBOX_AUTH_ROUTES: RegExp[] = [
   /^\/sessions\/[^/]+\/pr$/, // PR creation from sandbox
   /^\/sessions\/[^/]+\/openai-token-refresh$/, // OpenAI token refresh from sandbox
+  /^\/sessions\/[^/]+\/sandbox\/error$/, // Fatal sandbox error reporting
   /^\/sessions\/[^/]+\/media$/, // Media upload from sandbox
   /^\/sessions\/[^/]+\/children$/, // POST spawn, GET list
   /^\/sessions\/[^/]+\/children\/[^/]+$/, // GET child detail
@@ -473,6 +474,11 @@ const routes: Route[] = [
     method: "POST",
     pattern: parsePattern("/sessions/:id/openai-token-refresh"),
     handler: handleOpenAITokenRefresh,
+  },
+  {
+    method: "POST",
+    pattern: parsePattern("/sessions/:id/sandbox/error"),
+    handler: handleSandboxErrorReport,
   },
   {
     method: "POST",
@@ -1448,6 +1454,30 @@ async function handleOpenAITokenRefresh(
     internalRequest(
       buildSessionInternalUrl(SessionInternalPaths.openaiTokenRefresh),
       { method: "POST" },
+      ctx
+    )
+  );
+}
+
+async function handleSandboxErrorReport(
+  request: Request,
+  env: Env,
+  match: RegExpMatchArray,
+  ctx: RequestContext
+): Promise<Response> {
+  const sessionId = match.groups?.id;
+  if (!sessionId) return error("Session ID required");
+
+  const body = await request.text();
+  const stub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+  return stub.fetch(
+    internalRequest(
+      buildSessionInternalUrl(SessionInternalPaths.reportSandboxError),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      },
       ctx
     )
   );
