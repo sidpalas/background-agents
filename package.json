@@ -7,6 +7,9 @@
     "packages/*"
   ],
   "scripts": {
+    "dev:docker-sandbox-api": "node scripts/docker-sandbox-api.mjs",
+    "docker:sandboxes:list": "bash scripts/docker-sandbox-list.sh",
+    "docker:sandboxes:clean": "bash scripts/docker-sandbox-clean.sh",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

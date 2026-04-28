@@ -222,6 +222,12 @@ All secrets are configured via Terraform. Required secrets include:
 
 Optional variables:
 
+- `SANDBOX_PROVIDER` - Sandbox runtime provider for this deployment (`modal`, `daytona`, or
+  `docker`, default: `modal`). `docker` is intended for local development.
+- `DOCKER_SANDBOX_API_URL` - URL for the local Docker sandbox API (required when
+  `SANDBOX_PROVIDER=docker`).
+- `DOCKER_SANDBOX_API_TOKEN` - Bearer token for the local Docker sandbox API (optional for trusted
+  local development).
 - `SCM_PROVIDER` - Source control provider for this deployment (`github`, `bitbucket`, or `gitlab`,
   default: `github`). `bitbucket` returns explicit `501 Not Implemented` responses until
   implemented.

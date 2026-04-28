@@ -108,6 +108,20 @@ export default tseslint.config(
     },
   },
 
+  // Docker sandbox helper script runs on Node.js.
+  {
+    files: ["scripts/docker-sandbox-api.mjs"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.es2022,
+      },
+    },
+    rules: {
+      "no-console": "off",
+    },
+  },
+
   // Test files configuration
   {
     files: ["**/*.test.{ts,tsx}", "**/*.spec.{ts,tsx}"],

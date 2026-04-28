@@ -22,15 +22,21 @@ describe("resolveSandboxBackendName", () => {
     expect(resolveSandboxBackendName("daytona")).toBe("daytona");
   });
 
+  it('returns "docker" for "docker"', () => {
+    expect(resolveSandboxBackendName("docker")).toBe("docker");
+  });
+
   it("is case-insensitive", () => {
     expect(resolveSandboxBackendName("MODAL")).toBe("modal");
     expect(resolveSandboxBackendName("Daytona")).toBe("daytona");
     expect(resolveSandboxBackendName("DAYTONA")).toBe("daytona");
+    expect(resolveSandboxBackendName("Docker")).toBe("docker");
   });
 
   it("trims whitespace", () => {
     expect(resolveSandboxBackendName("  modal  ")).toBe("modal");
     expect(resolveSandboxBackendName("  daytona  ")).toBe("daytona");
+    expect(resolveSandboxBackendName("  docker  ")).toBe("docker");
   });
 
   it("throws for unsupported provider", () => {
@@ -50,5 +56,9 @@ describe("isModalSandboxBackend", () => {
 
   it("returns false for daytona", () => {
     expect(isModalSandboxBackend("daytona")).toBe(false);
+  });
+
+  it("returns false for docker", () => {
+    expect(isModalSandboxBackend("docker")).toBe(false);
   });
 });

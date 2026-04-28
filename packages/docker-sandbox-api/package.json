@@ -1,0 +1,11 @@
+{
+  "name": "@open-inspect/docker-sandbox-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  }
+}
