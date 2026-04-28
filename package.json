@@ -9,7 +9,7 @@
   "scripts": {
     "dev:env": "node scripts/local-env.mjs",
     "dev:modal-secrets": "node scripts/modal-secrets.mjs",
-    "dev:db:local": "bash scripts/d1-migrate-local.sh",
+    "dev:db:local": "bash scripts/d1-migrate.sh local",
     "dev:control-plane": "npm run dev -w @open-inspect/control-plane",
     "dev:web": "npm run dev -w @open-inspect/web",
     "lint": "eslint .",
