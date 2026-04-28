@@ -33,6 +33,12 @@ type SessionState = SharedSessionState;
 type Participant = ParticipantPresence;
 type WsMessage = ServerMessage;
 
+function normalizeParticipants(participants: ParticipantPresence[]): ParticipantPresence[] {
+  return Array.from(
+    new Map(participants.map((participant) => [participant.participantId, participant])).values()
+  );
+}
+
 interface UseSessionSocketReturn {
   connected: boolean;
   connecting: boolean;
@@ -279,6 +285,8 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
         case "subscribed": {
           console.log("WebSocket subscribed to session");
           subscribedRef.current = true;
+          setAuthError(null);
+          setConnectionError(null);
           // Replace local artifacts with the subscribed snapshot so reconnects
           // still clear stale state instead of merging stale client data.
           setArtifacts(data.artifacts.map(toUiArtifact));
@@ -337,12 +345,13 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
         }
 
         case "presence_sync":
-        case "presence_update":
-          setParticipants(data.participants);
+        case "presence_update": {
+          const nextParticipants = normalizeParticipants(data.participants);
+          setParticipants(nextParticipants);
           // Update current participant info for author attribution
           setCurrentParticipantId((currentId) => {
             if (currentId) {
-              const currentParticipant = data.participants.find(
+              const currentParticipant = nextParticipants.find(
                 (p) => p.participantId === currentId
               );
               if (currentParticipant) {
@@ -356,6 +365,7 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
             return currentId;
           });
           break;
+        }
 
         case "presence_leave":
           setParticipants((prev) => prev.filter((p) => p.userId !== data.userId));
@@ -554,6 +564,8 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
       }
       console.log("WebSocket connected!");
       connectingRef.current = false;
+      setAuthError(null);
+      setConnectionError(null);
       setConnected(true);
       setConnecting(false);
       reconnectAttempts.current = 0;
@@ -593,9 +605,19 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
 
       // Handle authentication errors
       if (event.code === WS_CLOSE_AUTH_REQUIRED) {
-        setAuthError("Authentication failed. Please sign in again.");
-        // Clear the token so we fetch a new one on reconnect
         wsTokenRef.current = null;
+        if (mountedRef.current && reconnectAttempts.current < 5) {
+          const delay = Math.min(500 * Math.pow(2, reconnectAttempts.current), 5000);
+          reconnectAttempts.current++;
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (mountedRef.current) {
+              connect();
+            }
+          }, delay);
+          return;
+        }
+
+        setAuthError("Authentication failed. Please sign in again.");
         return;
       }
 
