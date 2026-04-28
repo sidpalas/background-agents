@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODE="${1:-}"
+MIGRATIONS_DIR="${3:-$SCRIPT_DIR/../terraform/d1/migrations}"
 
 WRANGLER="npx wrangler"
 
@@ -15,7 +16,6 @@ usage() {
 case "$MODE" in
   local)
     DATABASE_NAME="${2:-open-inspect-test}"
-    MIGRATIONS_DIR="${3:-$SCRIPT_DIR/../terraform/d1/migrations}"
     D1_OPTIONS=(--local --config "$SCRIPT_DIR/../packages/control-plane/wrangler.jsonc")
     ;;
   remote)
@@ -24,7 +24,6 @@ case "$MODE" in
       exit 1
     fi
     DATABASE_NAME="$2"
-    MIGRATIONS_DIR="${3:-$SCRIPT_DIR/../terraform/d1/migrations}"
     D1_OPTIONS=(--remote)
     ;;
   *)
