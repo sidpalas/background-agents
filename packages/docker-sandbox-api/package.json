@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && node dist/index.js",
+    "dev": "node --env-file-if-exists=.env.local --import tsx src/index.ts",
+    "docker:sandbox:build": "docker build -t open-inspect-sandbox-runtime:local -f ../../packages/sandbox-runtime/Dockerfile.sandbox ../..",
     "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }

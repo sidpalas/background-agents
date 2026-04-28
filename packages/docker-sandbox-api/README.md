@@ -17,7 +17,7 @@ provider boundary.
 ## Scope
 
 - `src/index.ts` exposes `/health`, `POST /sandboxes`, and `POST /sandboxes/:id/stop`.
-- `scripts/docker-sandbox-api.mjs` loads `.env.local` and starts this package with local defaults.
+- `package.json` builds the TypeScript API and starts it with optional `.env.local` values.
 - `packages/sandbox-runtime/Dockerfile.sandbox` defines the sandbox image.
 - Cleanup scripts list/remove containers by Open-Inspect labels.
 
@@ -40,11 +40,19 @@ errors, and better support for remote Docker hosts.
 From the repository root:
 
 ```bash
+npm run docker:sandbox:build
 npm run dev:docker-sandbox-api
 ```
 
-The launcher optionally reads root `.env.local`. Use that file, or shell env vars, for values needed
-by the Docker API process and by sandbox containers:
+That runs `src/index.ts` directly; this package is currently intended for local development. If the
+configured image is missing, the API logs a breadcrumb to run `npm run docker:sandbox:build`.
+
+The start script optionally reads `packages/docker-sandbox-api/.env.local`. Use that file, or shell
+env vars, for values needed by the Docker API process and by sandbox containers:
+
+```bash
+cp packages/docker-sandbox-api/.env.example packages/docker-sandbox-api/.env.local
+```
 
 ```env
 DOCKER_SANDBOX_API_TOKEN=local-docker-sandbox-token
@@ -78,8 +86,6 @@ mapping, which is expected to require Docker Engine 20.10 or newer.
 - `PORT` - API port, defaults to `8788`
 - `DOCKER_SANDBOX_API_TOKEN` - optional bearer token for API requests
 - `DOCKER_SANDBOX_IMAGE` - sandbox image, defaults to `open-inspect-sandbox-runtime:local`
-- `DOCKER_SANDBOX_BUILD_ON_STARTUP` - set `false` to skip startup image build
-- `DOCKER_SANDBOX_DOCKERFILE` - sandbox Dockerfile path
 - `DOCKER_SANDBOX_NETWORK` - optional `docker run --network` value
 - `DOCKER_SANDBOX_PASSTHROUGH_ENV_VARS` - comma-separated host env vars copied into containers
 - `DOCKER_SANDBOX_REAP_INTERVAL_MS` - expiry cleanup interval, defaults to `60000`
@@ -89,7 +95,7 @@ mapping, which is expected to require Docker Engine 20.10 or newer.
 
 ```bash
 npm run typecheck -w @open-inspect/docker-sandbox-api
-npx eslint packages/docker-sandbox-api/src/index.ts scripts/docker-sandbox-api.mjs
+npx eslint packages/docker-sandbox-api/src/index.ts
 npm test -w @open-inspect/control-plane -- \
   src/sandbox/docker-client.test.ts \
   src/sandbox/provider-name.test.ts \

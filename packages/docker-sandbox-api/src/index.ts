@@ -8,10 +8,6 @@ const PORT = Number(process.env.PORT || "8788");
 const API_TOKEN = process.env.DOCKER_SANDBOX_API_TOKEN || "";
 const SANDBOX_IMAGE = process.env.DOCKER_SANDBOX_IMAGE || "open-inspect-sandbox-runtime:local";
 const SANDBOX_NETWORK = process.env.DOCKER_SANDBOX_NETWORK || "";
-const BUILD_CONTEXT = process.env.DOCKER_SANDBOX_BUILD_CONTEXT || process.cwd();
-const DOCKERFILE_PATH =
-  process.env.DOCKER_SANDBOX_DOCKERFILE || "packages/sandbox-runtime/Dockerfile.sandbox";
-const BUILD_ON_STARTUP = process.env.DOCKER_SANDBOX_BUILD_ON_STARTUP !== "false";
 const PASSTHROUGH_ENV_VARS = (process.env.DOCKER_SANDBOX_PASSTHROUGH_ENV_VARS || "")
   .split(",")
   .map((value) => value.trim())
@@ -96,15 +92,18 @@ async function ensureSandboxImage(): Promise<void> {
     try {
       await execFileAsync("docker", ["image", "inspect", SANDBOX_IMAGE]);
       return;
-    } catch {
-      await execFileAsync("docker", [
-        "build",
-        "-t",
-        SANDBOX_IMAGE,
-        "-f",
-        DOCKERFILE_PATH,
-        BUILD_CONTEXT,
-      ]);
+    } catch (error) {
+      throw new Error(
+        [
+          "",
+          "=== Docker sandbox image missing ===",
+          `Image: ${SANDBOX_IMAGE}`,
+          "Run this from the repository root:",
+          "  npm run docker:sandbox:build",
+          "",
+        ].join("\n"),
+        { cause: error }
+      );
     }
   })();
 
@@ -292,12 +291,12 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", async () => {
-  if (BUILD_ON_STARTUP) {
-    try {
-      await ensureSandboxImage();
-    } catch (error) {
-      console.error("Failed to build sandbox image on startup:", error);
-    }
+  try {
+    await ensureSandboxImage();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    server.close(() => process.exit(1));
+    return;
   }
   setInterval(() => {
     void reapExpiredContainers();

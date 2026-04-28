@@ -199,25 +199,29 @@ Prerequisites:
 - API keys for the agent model provider you want to use, such as `ANTHROPIC_API_KEY` or
   `OPENAI_API_KEY`
 
-Run the Docker sandbox API on the host from the repository root:
+Build the sandbox image from the repository root:
+
+```bash
+npm run docker:sandbox:build
+```
+
+Then run the Docker sandbox API on the host:
 
 ```bash
 npm run dev:docker-sandbox-api
 ```
 
-The script optionally loads root `.env.local`, forwards model API keys listed in
-`DOCKER_SANDBOX_PASSTHROUGH_ENV_VARS`, uses the host Docker CLI, and builds
-`open-inspect-sandbox-runtime:local` on startup if it does not already exist. If you want the Docker
-API process to load local API keys, create root `.env.local` with values like:
+The package start script optionally loads `packages/docker-sandbox-api/.env.local`, forwards model
+API keys listed in `DOCKER_SANDBOX_PASSTHROUGH_ENV_VARS`, and uses the host Docker CLI. If the
+sandbox image is missing, the API logs a breadcrumb to run `npm run docker:sandbox:build`. If you
+want the Docker API process to load local API keys, copy the package env template and fill in
+values:
 
 ```bash
-DOCKER_SANDBOX_API_TOKEN=local-docker-sandbox-token
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
+cp packages/docker-sandbox-api/.env.example packages/docker-sandbox-api/.env.local
 ```
 
-You can also provide these through the shell environment. To disable startup builds, set
-`DOCKER_SANDBOX_BUILD_ON_STARTUP=false`.
+You can also provide these through the shell environment.
 
 Configure the local control plane with Docker as its sandbox provider:
 
@@ -242,8 +246,6 @@ Useful optional variables:
 - `DOCKER_SANDBOX_API_TOKEN`: bearer token required by the Docker sandbox API
 - `DOCKER_SANDBOX_MAX_AGE_SECONDS`: fallback max sandbox lifetime, defaults to `7200`
 - `DOCKER_SANDBOX_REAP_INTERVAL_MS`: expired container cleanup interval, defaults to `60000`
-- `DOCKER_SANDBOX_BUILD_ON_STARTUP`: set to `false` to skip image build on API startup
-- `DOCKER_SANDBOX_DOCKERFILE`: override the sandbox runtime Dockerfile path
 
 Useful cleanup commands:
 
