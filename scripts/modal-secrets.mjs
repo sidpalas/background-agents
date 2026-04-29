@@ -1,55 +1,19 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
-const root = resolve(new URL("..", import.meta.url).pathname);
-const sourcePath = resolve(root, ".env.local");
-
-function parseEnv(contents) {
-  const env = {};
-
-  for (const rawLine of contents.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-
-    const index = line.indexOf("=");
-    if (index === -1) continue;
-
-    const key = line.slice(0, index).trim();
-    let value = line.slice(index + 1).trim();
-
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    env[key] = value.replace(/\\n/g, "\n");
-  }
-
-  return env;
-}
-
-function requireEnv(env, keys) {
-  const missing = keys.filter((key) => !env[key]);
-  if (missing.length > 0) {
-    console.error(`Missing required values in .env.local: ${missing.join(", ")}`);
-    process.exit(1);
-  }
-}
+import { getRequiredEnvKeys, readRootEnv, requireEnv, root } from "./env-utils.mjs";
 
 function shellWords(command) {
-  return command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => {
-    if (
-      (part.startsWith('"') && part.endsWith('"')) ||
-      (part.startsWith("'") && part.endsWith("'"))
-    ) {
-      return part.slice(1, -1);
-    }
-    return part;
-  }) ?? [command];
+  return (
+    command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) => {
+      if (
+        (part.startsWith('"') && part.endsWith('"')) ||
+        (part.startsWith("'") && part.endsWith("'"))
+      ) {
+        return part.slice(1, -1);
+      }
+      return part;
+    }) ?? [command]
+  );
 }
 
 function createSecret(modalCommand, secretName, values) {
@@ -79,24 +43,14 @@ function createSecret(modalCommand, secretName, values) {
   }
 }
 
-let source;
-try {
-  source = readFileSync(sourcePath, "utf8");
-} catch {
-  console.error("Missing .env.local. Copy .env.example to .env.local and fill in real values.");
-  process.exit(1);
-}
+const env = readRootEnv();
+const requiredEnvKeys = getRequiredEnvKeys(env);
+requireEnv(env, requiredEnvKeys.modalSecrets);
 
-const env = parseEnv(source);
-requireEnv(env, [
-  "ANTHROPIC_API_KEY",
-  "GITHUB_APP_ID",
-  "GITHUB_APP_PRIVATE_KEY",
-  "GITHUB_APP_INSTALLATION_ID",
-  "MODAL_API_SECRET",
-  "INTERNAL_CALLBACK_SECRET",
-  "CONTROL_PLANE_URL",
-]);
+if (requiredEnvKeys.modalSecrets.length === 0) {
+  console.log("Modal secrets are not required for SANDBOX_PROVIDER=daytona.");
+  process.exit(0);
+}
 
 const controlPlaneUrl = new URL(env.CONTROL_PLANE_URL);
 const allowedHosts = env.ALLOWED_CONTROL_PLANE_HOSTS || controlPlaneUrl.host;
