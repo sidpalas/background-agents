@@ -32,6 +32,7 @@ case "$MODE" in
     ;;
 esac
 
+# 1. Ensure tracking table exists.
 $WRANGLER d1 execute "$DATABASE_NAME" "${D1_OPTIONS[@]}" \
   --command "CREATE TABLE IF NOT EXISTS _schema_migrations (
     version TEXT PRIMARY KEY,
@@ -39,10 +40,12 @@ $WRANGLER d1 execute "$DATABASE_NAME" "${D1_OPTIONS[@]}" \
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   )"
 
+# 2. Get applied versions from the tracking table.
 APPLIED=$($WRANGLER d1 execute "$DATABASE_NAME" "${D1_OPTIONS[@]}" \
   --command "SELECT version FROM _schema_migrations ORDER BY version" \
   --json | jq -r '.[0].results[].version // empty' 2>/dev/null || true)
 
+# 3. Apply pending migrations in order.
 COUNT=0
 for file in "$MIGRATIONS_DIR"/*.sql; do
   [ -f "$file" ] || continue
