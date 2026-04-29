@@ -31,7 +31,7 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY--
 3. Expose the local control plane to Modal.
 
 Modal sandboxes run remotely, so they cannot connect back to `localhost:8787` on your machine. Start
-a tunnel to the local control plane port:
+a tunnel to expose the local control plane port:
 
 ```bash
 ngrok http 8787
