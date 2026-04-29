@@ -1,7 +1,7 @@
 # Local Web And Control Plane
 
-<!-- prettier-ignore -->
-Run the web app and control plane on your machine while using real GitHub App credentials and real sandbox services.
+Run the web app and control plane on your machine while using real GitHub App credentials and real
+sandbox services.
 
 ## Services
 
@@ -30,8 +30,8 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY--
 
 3. Expose the local control plane to Modal.
 
-<!-- prettier-ignore -->
-Modal sandboxes run remotely, so they cannot connect back to `localhost:8787` on your machine. Start a tunnel to expose the local control plane port:
+Modal sandboxes run remotely, so they cannot connect back to `localhost:8787` on your machine. Start
+a tunnel to expose the local control plane port:
 
 ```bash
 ngrok http 8787
@@ -71,8 +71,9 @@ At minimum Modal needs:
 - `internal-api`: `MODAL_API_SECRET`, `INTERNAL_CALLBACK_SECRET`, `ALLOWED_CONTROL_PLANE_HOSTS`,
   `CONTROL_PLANE_URL`
 
-<!-- prettier-ignore -->
-For remote Modal callbacks, `ALLOWED_CONTROL_PLANE_HOSTS` must include the tunnel host. The `dev:modal-secrets` script derives this from `CONTROL_PLANE_URL` unless you set `ALLOWED_CONTROL_PLANE_HOSTS` explicitly.
+For remote Modal callbacks, `ALLOWED_CONTROL_PLANE_HOSTS` must include the tunnel host. The
+`dev:modal-secrets` script derives this from `CONTROL_PLANE_URL` unless you set
+`ALLOWED_CONTROL_PLANE_HOSTS` explicitly.
 
 Skip this step when `SANDBOX_PROVIDER=daytona`; `dev:modal-secrets` is only needed for Modal.
 
@@ -114,8 +115,8 @@ http://localhost:3000/api/auth/callback/github
 
 ## Env File Management
 
-<!-- prettier-ignore -->
-Local full-stack development uses the root `.env.local` as the only editable env file. Do not edit the generated service-specific files directly.
+Local full-stack development uses the root `.env.local` as the only editable env file. Do not edit
+the generated service-specific files directly.
 
 Source file:
 
@@ -148,8 +149,8 @@ The generator also derives public provider values for the web app:
 - `NEXT_PUBLIC_SANDBOX_PROVIDER` is derived from `SANDBOX_PROVIDER`
 - `NEXT_PUBLIC_SCM_PROVIDER` is derived from `SCM_PROVIDER`
 
-<!-- prettier-ignore -->
-Only set the `NEXT_PUBLIC_*` provider values in `.env.local` if you intentionally need to override the derived value.
+Only set the `NEXT_PUBLIC_*` provider values in `.env.local` if you intentionally need to override
+the derived value.
 
 Modal secrets are synced separately because Modal stores them in its own secret manager:
 
@@ -157,12 +158,12 @@ Modal secrets are synced separately because Modal stores them in its own secret 
 npm run dev:modal-secrets
 ```
 
-<!-- prettier-ignore -->
-This command reads `.env.local`, validates Modal-specific values, and creates or updates the Modal secrets used by the deployed Modal app. It exits without making changes when `SANDBOX_PROVIDER` is not `modal`.
+This command reads `.env.local`, validates Modal-specific values, and creates or updates the Modal
+secrets used by the deployed Modal app. It exits without making changes when `SANDBOX_PROVIDER` is
+not `modal`.
 
 ## Notes
 
 - The control plane uses local Wrangler storage for D1, KV, R2, and Durable Objects.
-<!-- prettier-ignore -->
 - Modal remains remote, so sandboxes must be able to call back through the tunnel. If the ngrok URL
   changes, update `.env.local`, then rerun `npm run dev:env` and `npm run dev:modal-secrets`.
