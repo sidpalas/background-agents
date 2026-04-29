@@ -52,7 +52,14 @@ if (requiredEnvKeys.modalSecrets.length === 0) {
   process.exit(0);
 }
 
-const controlPlaneUrl = new URL(env.CONTROL_PLANE_URL);
+let controlPlaneUrl;
+try {
+  controlPlaneUrl = new URL(env.CONTROL_PLANE_URL);
+} catch {
+  console.error(`Invalid CONTROL_PLANE_URL in .env.local: ${env.CONTROL_PLANE_URL}`);
+  process.exit(1);
+}
+
 const allowedHosts = env.ALLOWED_CONTROL_PLANE_HOSTS || controlPlaneUrl.host;
 const modalCommand = shellWords(process.env.MODAL_CLI || "modal");
 

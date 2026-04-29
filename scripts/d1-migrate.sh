@@ -43,14 +43,19 @@ $WRANGLER d1 execute "$DATABASE_NAME" "${D1_OPTIONS[@]}" \
 # 2. Get applied versions from the tracking table.
 APPLIED=$($WRANGLER d1 execute "$DATABASE_NAME" "${D1_OPTIONS[@]}" \
   --command "SELECT version FROM _schema_migrations ORDER BY version" \
-  --json | jq -r '.[0].results[].version // empty' 2>/dev/null || true)
+  --json | jq -r '.[0].results // [] | .[].version')
 
 # 3. Apply pending migrations in order.
 COUNT=0
 for file in "$MIGRATIONS_DIR"/*.sql; do
   [ -f "$file" ] || continue
   FILENAME=$(basename "$file")
-  VERSION=$(printf "%s" "$FILENAME" | grep -oE '^[0-9]+')
+  if [[ "$FILENAME" =~ ^([0-9]+) ]]; then
+    VERSION="${BASH_REMATCH[1]}"
+  else
+    printf "Invalid migration filename: VERSION is empty for FILENAME=%s; expected numeric prefix.\n" "$FILENAME" >&2
+    exit 1
+  fi
 
   if printf "%s\n" "$APPLIED" | grep -qxF "$VERSION"; then
     printf "Skip (already applied): %s\n" "$FILENAME"
