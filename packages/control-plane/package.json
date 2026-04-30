@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=browser --target=es2022 --external:cloudflare:* --external:node:*",
+    "build:railway": "esbuild src/node-server.ts --bundle --format=esm --outfile=dist/node-server.js --platform=node --target=node20 --external:pg --external:ws",
+    "start:railway": "node dist/node-server.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
@@ -14,13 +16,17 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20241230.0",
-    "@open-inspect/shared": "file:../shared"
+    "@open-inspect/shared": "file:../shared",
+    "pg": "^8.20.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.10",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^3.2.0",
     "esbuild": "^0.25.1",
     "typescript": "^5.7.2",
-    "@vitest/coverage-v8": "^3.2.0",
     "vitest": "^3.2.0",
     "wrangler": "^4.0.0"
   }

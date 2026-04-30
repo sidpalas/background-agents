@@ -78,6 +78,12 @@ async function getServiceBinding(): Promise<ServiceBinding | null> {
     return null;
   }
 
+  // Railway runs the regular Node.js Next server, not an OpenNext Worker.
+  // Avoid the OpenNext local-dev service binding proxy in this runtime.
+  if (process.env.RAILWAY_ENVIRONMENT_ID) {
+    return null;
+  }
+
   try {
     const { getCloudflareContext } = await import("@opennextjs/cloudflare");
     const ctx = await getCloudflareContext({ async: true });
