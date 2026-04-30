@@ -1,0 +1,15 @@
+{
+  "name": "@open-inspect/docker-sandbox-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --env-file-if-exists=.env.local --import tsx src/index.ts",
+    "docker:sandbox:build": "docker build -t open-inspect-sandbox-runtime:local -f ../../packages/sandbox-runtime/Dockerfile.sandbox ../..",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

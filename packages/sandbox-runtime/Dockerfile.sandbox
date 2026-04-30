@@ -1,0 +1,42 @@
+FROM python:3.12-bookworm
+
+LABEL openinspect_framework="open-inspect"
+LABEL openinspect_kind="sandbox-image"
+LABEL openinspect_env="local"
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    gh \
+    jq \
+    openssh-client \
+    build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g opencode-ai@latest @opencode-ai/plugin@latest zod \
+  && mkdir -p /usr/lib \
+  && ln -sf /usr/local/lib/node_modules /usr/lib/node_modules
+
+WORKDIR /app
+
+COPY packages/sandbox-runtime /tmp/sandbox-runtime
+RUN pip install --no-cache-dir /tmp/sandbox-runtime \
+  && rm -rf /tmp/sandbox-runtime
+
+COPY packages/sandbox-runtime/src/sandbox_runtime /app/sandbox_runtime
+
+RUN mkdir -p /workspace /tmp/opencode
+
+ENV HOME=/root
+ENV NODE_ENV=development
+ENV PYTHONPATH=/app
+ENV NODE_PATH=/usr/local/lib/node_modules
+
+ENTRYPOINT ["python", "-m", "sandbox_runtime.entrypoint"]

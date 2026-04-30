@@ -7,6 +7,10 @@
     "packages/*"
   ],
   "scripts": {
+    "dev:docker-sandbox-api": "npm run dev -w @open-inspect/docker-sandbox-api",
+    "docker:sandbox:build": "npm run docker:sandbox:build -w @open-inspect/docker-sandbox-api",
+    "docker:sandboxes:list": "bash scripts/docker-sandbox-list.sh",
+    "docker:sandboxes:clean": "bash scripts/docker-sandbox-clean.sh",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

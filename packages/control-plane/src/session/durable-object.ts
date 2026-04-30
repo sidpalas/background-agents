@@ -15,8 +15,10 @@ import { generateId, hashToken, encryptToken, decryptToken } from "../auth/crypt
 import { getGitHubAppConfig, getCachedInstallationToken } from "../auth/github-app";
 import { createModalClient } from "../sandbox/client";
 import { createDaytonaRestClient } from "../sandbox/daytona-rest-client";
+import { createDockerSandboxClient } from "../sandbox/docker-client";
 import { createModalProvider } from "../sandbox/providers/modal-provider";
 import { createDaytonaProvider } from "../sandbox/providers/daytona-provider";
+import { createDockerProvider } from "../sandbox/providers/docker-provider";
 import { resolveSandboxBackendName } from "../sandbox/provider-name";
 import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
@@ -547,72 +549,89 @@ export class SessionDO extends DurableObject<Env> {
   private createLifecycleManager(): SandboxLifecycleManager {
     const sandboxBackend = resolveSandboxBackendName(this.env.SANDBOX_PROVIDER);
 
-    const provider =
-      sandboxBackend === "daytona"
-        ? (() => {
-            if (
-              !this.env.DAYTONA_API_URL ||
-              !this.env.DAYTONA_API_KEY ||
-              !this.env.DAYTONA_BASE_SNAPSHOT
-            ) {
-              throw new Error(
-                "DAYTONA_API_URL, DAYTONA_API_KEY, and DAYTONA_BASE_SNAPSHOT are required when SANDBOX_PROVIDER=daytona"
-              );
-            }
+    const provider = (() => {
+      const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
+      const appConfig = getGitHubAppConfig(this.env);
+      const getCloneToken = (): Promise<string | null> => {
+        if (scmProvider === "gitlab") {
+          return Promise.resolve(this.env.GITLAB_ACCESS_TOKEN ?? null);
+        }
 
-            const daytonaClient = createDaytonaRestClient({
-              apiUrl: this.env.DAYTONA_API_URL,
-              apiKey: this.env.DAYTONA_API_KEY,
-              target: this.env.DAYTONA_TARGET,
-              baseSnapshot: this.env.DAYTONA_BASE_SNAPSHOT,
-              autoStopIntervalMinutes: parseInt(
-                this.env.DAYTONA_AUTO_STOP_INTERVAL_MINUTES || "120",
-                10
-              ),
-              autoArchiveIntervalMinutes: parseInt(
-                this.env.DAYTONA_AUTO_ARCHIVE_INTERVAL_MINUTES || "10080",
-                10
-              ),
-            });
+        if (!appConfig) {
+          return Promise.resolve(null);
+        }
 
-            const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
-            const appConfig = getGitHubAppConfig(this.env);
+        return getCachedInstallationToken(appConfig, {
+          cacheStore: createKvCacheStore(this.env.REPOS_CACHE),
+        });
+      };
 
-            const getCloneToken: () => Promise<string | null> =
-              scmProvider === "gitlab"
-                ? () => Promise.resolve(this.env.GITLAB_ACCESS_TOKEN ?? null)
-                : appConfig
-                  ? () =>
-                      getCachedInstallationToken(appConfig, {
-                        cacheStore: createKvCacheStore(this.env.REPOS_CACHE),
-                      })
-                  : () => Promise.resolve(null);
+      if (sandboxBackend === "daytona") {
+        if (
+          !this.env.DAYTONA_API_URL ||
+          !this.env.DAYTONA_API_KEY ||
+          !this.env.DAYTONA_BASE_SNAPSHOT
+        ) {
+          throw new Error(
+            "DAYTONA_API_URL, DAYTONA_API_KEY, and DAYTONA_BASE_SNAPSHOT are required when SANDBOX_PROVIDER=daytona"
+          );
+        }
 
-            return createDaytonaProvider(
-              daytonaClient,
-              {
-                scmProvider,
-                gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
-                // Reuses API key as HMAC secret for code-server password derivation
-                // (distinct message prefix prevents collision with auth use)
-                codeServerPasswordSecret: this.env.DAYTONA_API_KEY,
-              },
-              getCloneToken
-            );
-          })()
-        : (() => {
-            if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
-              throw new Error(
-                "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
-              );
-            }
+        const daytonaClient = createDaytonaRestClient({
+          apiUrl: this.env.DAYTONA_API_URL,
+          apiKey: this.env.DAYTONA_API_KEY,
+          target: this.env.DAYTONA_TARGET,
+          baseSnapshot: this.env.DAYTONA_BASE_SNAPSHOT,
+          autoStopIntervalMinutes: parseInt(
+            this.env.DAYTONA_AUTO_STOP_INTERVAL_MINUTES || "120",
+            10
+          ),
+          autoArchiveIntervalMinutes: parseInt(
+            this.env.DAYTONA_AUTO_ARCHIVE_INTERVAL_MINUTES || "10080",
+            10
+          ),
+        });
 
-            const modalClient = createModalClient(
-              this.env.MODAL_API_SECRET,
-              this.env.MODAL_WORKSPACE
-            );
-            return createModalProvider(modalClient);
-          })();
+        return createDaytonaProvider(
+          daytonaClient,
+          {
+            scmProvider,
+            gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
+            // Reuses API key as HMAC secret for code-server password derivation
+            // (distinct message prefix prevents collision with auth use)
+            codeServerPasswordSecret: this.env.DAYTONA_API_KEY,
+          },
+          getCloneToken
+        );
+      }
+
+      if (sandboxBackend === "docker") {
+        if (!this.env.DOCKER_SANDBOX_API_URL) {
+          throw new Error("DOCKER_SANDBOX_API_URL is required when SANDBOX_PROVIDER=docker");
+        }
+
+        return createDockerProvider(
+          createDockerSandboxClient(
+            this.env.DOCKER_SANDBOX_API_URL,
+            this.env.DOCKER_SANDBOX_API_TOKEN
+          ),
+          {
+            scmProvider,
+            gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
+          },
+          getCloneToken
+        );
+      }
+
+      if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
+        throw new Error(
+          "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
+        );
+      }
+
+      const modalClient = createModalClient(this.env.MODAL_API_SECRET, this.env.MODAL_WORKSPACE);
+      return createModalProvider(modalClient);
+    })();
 
     // Storage adapter
     const storage: SandboxStorage = {

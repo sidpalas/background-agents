@@ -30,6 +30,10 @@ Optional (needed for `modal-infra` development):
 - `uv` (recommended) or `pip`
 - Modal CLI (`modal`)
 
+Optional (needed for local Docker sandboxes):
+
+- Docker Desktop, or Docker Engine `20.10+` on Linux for `host-gateway` networking
+
 Optional (needed for full deployment):
 
 - Terraform `1.6+`
@@ -181,6 +185,82 @@ pip install -e ../sandbox-runtime
 pip install -e ".[dev]"
 
 pytest tests/ -v
+```
+
+### Local Docker sandbox service
+
+Use this when you want the local control plane to spawn sandboxes through Docker instead of Modal or
+Daytona.
+
+Prerequisites:
+
+- Docker Engine or Docker Desktop
+- A locally running control plane
+- API keys for the agent model provider you want to use, such as `ANTHROPIC_API_KEY` or
+  `OPENAI_API_KEY`
+
+Build the sandbox image from the repository root:
+
+```bash
+npm run docker:sandbox:build
+```
+
+Then run the Docker sandbox API on the host:
+
+```bash
+npm run dev:docker-sandbox-api
+```
+
+The package start script optionally loads `packages/docker-sandbox-api/.env.local`, forwards model
+API keys listed in `DOCKER_SANDBOX_PASSTHROUGH_ENV_VARS`, and uses the host Docker CLI. If the
+sandbox image is missing, the API logs a breadcrumb to run `npm run docker:sandbox:build`. If you
+want the Docker API process to load local API keys, copy the package env template and fill in
+values:
+
+```bash
+cp packages/docker-sandbox-api/.env.example packages/docker-sandbox-api/.env.local
+```
+
+You can also provide these through the shell environment.
+
+Configure the local control plane with Docker as its sandbox provider:
+
+```bash
+SANDBOX_PROVIDER=docker
+DOCKER_SANDBOX_API_URL=http://127.0.0.1:8788
+DOCKER_SANDBOX_API_TOKEN=local-docker-sandbox-token
+CONTROL_PLANE_URL=http://host.docker.internal:8787
+WORKER_URL=http://host.docker.internal:8787
+```
+
+If you set `DOCKER_SANDBOX_API_TOKEN` for the Docker API process, the control-plane value must
+match.
+
+For sandbox callbacks back to the local control plane, set the control-plane URL given to sandboxes
+to `http://host.docker.internal:<control-plane-port>`. Docker Desktop provides this hostname on
+macOS and Windows. The sandbox API also adds Docker's `host-gateway` mapping so the same hostname
+works on Linux Docker Engine 20.10+.
+
+Useful optional variables:
+
+- `DOCKER_SANDBOX_API_TOKEN`: bearer token required by the Docker sandbox API
+- `DOCKER_SANDBOX_MAX_AGE_SECONDS`: fallback max sandbox lifetime, defaults to `7200`
+- `DOCKER_SANDBOX_REAP_INTERVAL_MS`: expired container cleanup interval, defaults to `60000`
+
+Useful cleanup commands:
+
+```bash
+# List local Docker sandbox containers
+npm run docker:sandboxes:list
+
+# Remove stopped sandboxes and expired running sandboxes
+npm run docker:sandboxes:clean
+
+# Remove every local sandbox container, including running ones
+npm run docker:sandboxes:clean -- --all
+
+# Also remove local sandbox images
+npm run docker:sandboxes:clean -- --all --images
 ```
 
 ## Path C: Full Self-Hosted Deployment
