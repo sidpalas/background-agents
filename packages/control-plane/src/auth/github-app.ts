@@ -49,6 +49,13 @@ const installationTokenMemoryCache = new Map<string, CachedInstallationToken>();
 const installationTokenRefreshInFlight = new Map<string, Promise<CachedInstallationToken>>();
 const importedPrivateKeyCache = new Map<string, Promise<CryptoKey>>();
 
+function normalizePrivateKey(privateKey: string): string {
+  const trimmed = privateKey.trim();
+  const unquoted =
+    trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed;
+  return unquoted.replace(/\\n/g, "\n").trim();
+}
+
 /** Fetch with an AbortController timeout. */
 export function fetchWithTimeout(
   url: string,
@@ -106,8 +113,9 @@ function base64UrlEncode(input: Uint8Array | string): string {
  * Parse PEM-encoded private key to raw bytes.
  */
 function parsePemPrivateKey(pem: string): Uint8Array {
+  const normalizedPem = normalizePrivateKey(pem);
   // Remove PEM header/footer and newlines
-  const pemContents = pem
+  const pemContents = normalizedPem
     .replace(/-----BEGIN RSA PRIVATE KEY-----/g, "")
     .replace(/-----END RSA PRIVATE KEY-----/g, "")
     .replace(/-----BEGIN PRIVATE KEY-----/g, "")
@@ -631,7 +639,7 @@ export function getGitHubAppConfig(env: {
 
   return {
     appId: env.GITHUB_APP_ID!,
-    privateKey: env.GITHUB_APP_PRIVATE_KEY!,
+    privateKey: normalizePrivateKey(env.GITHUB_APP_PRIVATE_KEY!),
     installationId: env.GITHUB_APP_INSTALLATION_ID!,
   };
 }

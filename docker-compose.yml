@@ -1,0 +1,64 @@
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: docker/local/app.Dockerfile
+    working_dir: /workspace/packages/control-plane
+    command:
+      - bash
+      - -lc
+      - npm --prefix /workspace run build -w @open-inspect/shared && bash ./scripts/apply-local-d1-migrations.sh && npx wrangler dev --config wrangler.jsonc --persist-to .wrangler/state --ip 0.0.0.0 --port 8787
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./packages/control-plane:/workspace/packages/control-plane
+      - ./packages/shared:/workspace/packages/shared
+    networks:
+      - open-inspect-local
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/local/app.Dockerfile
+    working_dir: /workspace/packages/web
+    command:
+      - bash
+      - -lc
+      - npm --prefix /workspace run build -w @open-inspect/shared && npm --prefix /workspace run dev -w @open-inspect/web -- --hostname 0.0.0.0 --port 3000
+    depends_on:
+      - control-plane
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./packages/web:/workspace/packages/web
+      - ./packages/shared:/workspace/packages/shared
+    networks:
+      - open-inspect-local
+
+  docker-sandbox-api:
+    build:
+      context: .
+      dockerfile: packages/docker-sandbox-api/Dockerfile
+    environment:
+      PORT: "8788"
+      DOCKER_SANDBOX_API_TOKEN: ${DOCKER_SANDBOX_API_TOKEN:-}
+      DOCKER_SANDBOX_PASSTHROUGH_ENV_VARS: ANTHROPIC_API_KEY,OPENAI_API_KEY,OPENCODE_API_KEY
+      DOCKER_SANDBOX_IMAGE: open-inspect-sandbox-runtime:local
+      DOCKER_SANDBOX_NETWORK: open-inspect-local
+      DOCKER_SANDBOX_BUILD_CONTEXT: /workspace
+      DOCKER_SANDBOX_DOCKERFILE: packages/sandbox-runtime/Dockerfile.local
+      DOCKER_SANDBOX_BUILD_ON_STARTUP: "true"
+      DOCKER_SANDBOX_REAP_INTERVAL_MS: ${DOCKER_SANDBOX_REAP_INTERVAL_MS:-60000}
+      DOCKER_SANDBOX_MAX_AGE_SECONDS: ${DOCKER_SANDBOX_MAX_AGE_SECONDS:-7200}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace:ro
+    networks:
+      - open-inspect-local
+
+networks:
+  open-inspect-local:
+    name: open-inspect-local

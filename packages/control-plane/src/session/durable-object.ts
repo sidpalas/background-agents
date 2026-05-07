@@ -15,8 +15,10 @@ import { generateId, hashToken, encryptToken, decryptToken } from "../auth/crypt
 import { getGitHubAppConfig, getCachedInstallationToken } from "../auth/github-app";
 import { createModalClient } from "../sandbox/client";
 import { createDaytonaRestClient } from "../sandbox/daytona-rest-client";
+import { createDockerSandboxClient } from "../sandbox/docker-client";
 import { createModalProvider } from "../sandbox/providers/modal-provider";
 import { createDaytonaProvider } from "../sandbox/providers/daytona-provider";
+import { createDockerProvider } from "../sandbox/providers/docker-provider";
 import { resolveSandboxBackendName } from "../sandbox/provider-name";
 import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
@@ -600,19 +602,49 @@ export class SessionDO extends DurableObject<Env> {
               getCloneToken
             );
           })()
-        : (() => {
-            if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
-              throw new Error(
-                "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
-              );
-            }
+        : sandboxBackend === "docker"
+          ? (() => {
+              if (!this.env.DOCKER_SANDBOX_API_URL) {
+                throw new Error("DOCKER_SANDBOX_API_URL is required when SANDBOX_PROVIDER=docker");
+              }
 
-            const modalClient = createModalClient(
-              this.env.MODAL_API_SECRET,
-              this.env.MODAL_WORKSPACE
-            );
-            return createModalProvider(modalClient);
-          })();
+              const dockerClient = createDockerSandboxClient(
+                this.env.DOCKER_SANDBOX_API_URL,
+                this.env.DOCKER_SANDBOX_API_TOKEN
+              );
+
+              const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
+              const appConfig = getGitHubAppConfig(this.env);
+
+              const getCloneToken: () => Promise<string | null> =
+                scmProvider === "gitlab"
+                  ? () => Promise.resolve(this.env.GITLAB_ACCESS_TOKEN ?? null)
+                  : appConfig
+                    ? () => getCachedInstallationToken(appConfig, this.env)
+                    : () => Promise.resolve(null);
+
+              return createDockerProvider(
+                dockerClient,
+                {
+                  scmProvider,
+                  gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
+                },
+                getCloneToken
+              );
+            })()
+          : (() => {
+              if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
+                throw new Error(
+                  "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
+                );
+              }
+
+              const modalClient = createModalClient(
+                this.env.MODAL_API_SECRET,
+                this.env.MODAL_WORKSPACE
+              );
+              return createModalProvider(modalClient);
+            })();
 
     // Storage adapter
     const storage: SandboxStorage = {

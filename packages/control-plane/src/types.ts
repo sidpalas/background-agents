@@ -78,8 +78,10 @@ export interface Env {
   WORKER_URL?: string; // Base URL for the worker (for callbacks)
   WEB_APP_URL?: string; // Base URL for the web app (for PR links)
   CF_ACCOUNT_ID?: string; // Cloudflare account ID
-  SANDBOX_PROVIDER?: string; // "modal" (default) or "daytona"
+  SANDBOX_PROVIDER?: string; // "modal" (default), "daytona", or "docker"
   MODAL_WORKSPACE?: string; // Modal workspace name (used in Modal endpoint URLs)
+  DOCKER_SANDBOX_API_URL?: string; // Local Docker sandbox manager base URL
+  DOCKER_SANDBOX_API_TOKEN?: string; // Optional bearer token for Docker sandbox manager
   DAYTONA_API_URL?: string; // Daytona REST API base URL
   DAYTONA_BASE_SNAPSHOT?: string; // Named Daytona snapshot used for fresh sandbox creation
   DAYTONA_AUTO_STOP_INTERVAL_MINUTES?: string; // Daytona idle stop interval in minutes

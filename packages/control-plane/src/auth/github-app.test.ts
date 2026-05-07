@@ -118,6 +118,21 @@ describe("github-app utilities", () => {
         })
       ).toBeNull();
     });
+
+    it("normalizes escaped newline private keys", () => {
+      const config = getGitHubAppConfig({
+        GITHUB_APP_ID: "12345",
+        GITHUB_APP_PRIVATE_KEY:
+          '"-----BEGIN PRIVATE KEY-----\\nkey\\n-----END PRIVATE KEY-----\\n"',
+        GITHUB_APP_INSTALLATION_ID: "67890",
+      });
+
+      expect(config).toEqual({
+        appId: "12345",
+        privateKey: "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----",
+        installationId: "67890",
+      });
+    });
   });
 
   describe("getCachedInstallationToken", () => {

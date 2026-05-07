@@ -9,6 +9,7 @@ It is organized by goal so you can pick the fastest path:
 | Path A | Run the web app locally against an existing backend      | ~10-20 min |
 | Path B | Contribute code locally (lint/typecheck/tests)           | ~15-30 min |
 | Path C | Deploy your own full stack (Cloudflare + Modal + Vercel) | ~1-3 hours |
+| Path D | Run a local Docker Compose stack (web + control plane)   | ~20-40 min |
 
 ## Important Context
 
@@ -195,6 +196,141 @@ Critical notes before deploy:
 - Build `@open-inspect/shared` first.
 - Use two-phase Terraform deploy for DO/service bindings.
 - Deploy Modal with `modal deploy deploy.py` (not `src/app.py`).
+
+## Path D: Local Docker Compose Stack
+
+Use this when you want a single local command for the web UI, control plane, and a minimal
+Docker-backed sandbox runtime.
+
+What this path includes:
+
+- `web` in Docker on `http://localhost:3000`
+- `control-plane` in Docker via `wrangler dev` on `http://localhost:8787`
+- local per-session sandbox containers managed by `docker-sandbox-api`
+
+Current scope:
+
+- web UI only
+- no Slack/GitHub/Linear bot containers
+- no snapshot/restore support for local sandboxes
+- code-server and ttyd are not included in the local sandbox image
+
+### 1. Create local env files
+
+```bash
+cp .env.compose.example .env
+cp packages/control-plane/.dev.vars.example packages/control-plane/.dev.vars
+cp packages/web/.env.example packages/web/.env.local
+```
+
+### 2. Fill required secrets
+
+At minimum you must set these values in `.env`, `packages/control-plane/.dev.vars`, and
+`packages/web/.env.local` as appropriate:
+
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+- `NEXTAUTH_SECRET`
+- `INTERNAL_CALLBACK_SECRET`
+- `TOKEN_ENCRYPTION_KEY`
+- `REPO_SECRETS_ENCRYPTION_KEY`
+- `GITHUB_APP_ID`
+- `GITHUB_APP_PRIVATE_KEY`
+- `GITHUB_APP_INSTALLATION_ID`
+
+Optional model-provider credentials for local sandboxes:
+
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `OPENCODE_API_KEY`
+
+Use the same values for shared settings across files. In particular:
+
+- `packages/control-plane/.dev.vars` and `packages/web/.env.local` must share `GITHUB_CLIENT_ID`,
+  `GITHUB_CLIENT_SECRET`, and `INTERNAL_CALLBACK_SECRET`
+- `packages/control-plane/.dev.vars` should keep: `SANDBOX_PROVIDER=docker` and
+  `DOCKER_SANDBOX_API_URL=http://docker-sandbox-api:8788`
+- `packages/web/.env.local` should use: `CONTROL_PLANE_URL=http://control-plane:8787` and
+  `NEXT_PUBLIC_WS_URL=ws://localhost:8787`
+- The root `.env` is also where local sandbox provider API keys should live. The Compose stack
+  passes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `OPENCODE_API_KEY` into `docker-sandbox-api`,
+  which injects them into newly created sandbox containers when present.
+
+### 3. Configure GitHub callback URL
+
+In your GitHub App settings include:
+
+`http://localhost:3000/api/auth/callback/github`
+
+### 4. Start the stack
+
+```bash
+docker compose up --build
+```
+
+### 5. Verify it works
+
+1. Open `http://localhost:3000`
+2. Sign in with GitHub
+3. Create a session
+4. Send a prompt
+5. Confirm a sandbox container is created and connects back to the control plane
+
+Useful commands:
+
+```bash
+docker compose logs -f web control-plane docker-sandbox-api
+docker ps --format '{{.Names}}'
+```
+
+### Compose Notes
+
+- The control plane uses the checked-in test Wrangler config for local D1/KV/R2/DO emulation
+- Sandbox containers are managed through `/var/run/docker.sock`
+- The local sandbox image is built from `packages/sandbox-runtime/Dockerfile.local`
+- `docker-sandbox-api` reaps expired local sandbox containers automatically based on sandbox TTL
+- If you change dependency manifests or Dockerfiles, rerun `docker compose up --build`
+
+### Manual Docker Cleanup
+
+Local sandbox artifacts are labeled for targeted cleanup:
+
+- containers: `openinspect_framework=open-inspect`, `openinspect_kind=sandbox`,
+  `openinspect_env=local`
+- images: `openinspect_framework=open-inspect`, `openinspect_kind=sandbox-image`,
+  `openinspect_env=local`
+
+Remove local sandbox containers:
+
+```bash
+bash scripts/docker-clean-local-sandboxes.sh
+```
+
+Remove local sandbox containers and images:
+
+```bash
+bash scripts/docker-clean-local-sandboxes.sh --images
+```
+
+### Reset The Local Stack
+
+To nuke Compose state and start fresh:
+
+```bash
+bash scripts/docker-reset-local-stack.sh
+```
+
+That command:
+
+- runs `docker compose down -v --remove-orphans`
+- removes local Wrangler/D1 state in `packages/control-plane/.wrangler/state`
+- removes local sandbox containers
+
+If you also want to remove local sandbox images:
+
+```bash
+bash scripts/docker-reset-local-stack.sh --images
+```
 
 ## Common Issues and Fixes
 
